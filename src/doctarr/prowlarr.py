@@ -41,6 +41,10 @@ class ProwlarrClient:
     ) -> dict:
         payload = {**schema, "tags": tag_ids, "enable": enable}
         payload.pop("id", None)
+        if not payload.get("name"):
+            payload["name"] = payload.get(
+                "definitionName", payload.get("implementationName", "Unknown")
+            )
         resp = await self._client.post(
             "/api/v1/indexer", json=payload, headers=self._headers()
         )
