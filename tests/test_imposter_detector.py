@@ -87,7 +87,12 @@ class TestImposterDetector:
         expected_runtime: int,
         actual_runtime_str: str,
         file_id: int = 1,
+        custom_path: str | None = None,
     ) -> dict:
+        path = (
+            custom_path
+            or f"Season {season:02d}/{series} - S{season:02d}E{episode:02d}.mkv"
+        )
         return {
             "id": ep_id,
             "seriesId": 1,
@@ -99,7 +104,7 @@ class TestImposterDetector:
             "series": {"title": series},
             "episodeFile": {
                 "id": file_id,
-                "relativePath": f"Season {season:02d}/{series} - S{season:02d}E{episode:02d}.mkv",
+                "relativePath": path,
                 "mediaInfo": {"runTime": actual_runtime_str},
             },
         }
@@ -129,8 +134,8 @@ class TestImposterDetector:
         assert any(n["event"] == "imposter.detected" for n in notifications)
         assert "Dark" in notifications[0]["payload"]["name"]
 
-    async def test_detects_last_frontier_imposter(self, notifier, notifications):
-        """The Last Frontier episode replaced with different content (90 min instead of 44 min)."""
+    async def test_detects_short_imposter(self, notifier, notifications):
+        """The Last Frontier episode replaced with much shorter content (20 min instead of 54 min)."""
         now = datetime.now(timezone.utc).isoformat()
         history = [{"episodeId": 200, "date": now}]
         episodes = {
@@ -140,8 +145,8 @@ class TestImposterDetector:
                 1,
                 3,
                 "Into the Wild",
-                44,
-                "1:30:22",
+                54,
+                "20:15",
                 file_id=600,
             )
         }
@@ -213,3 +218,92 @@ class TestImposterDetector:
             tolerance=0.40,
         )
         assert len(notifications) == 0
+
+    async def test_skips_double_episode_file(self, notifier, notifications):
+        """A file containing E01-E02 (double episode) should not be flagged."""
+        now = datetime.now(timezone.utc).isoformat()
+        history = [{"episodeId": 500, "date": now}]
+        episodes = {
+            500: self._make_episode(
+                500,
+                "Abbott Elementary",
+                3,
+                1,
+                "Career Day",
+                22,
+                "44:10",
+                file_id=900,
+                custom_path="Season 03/Abbott Elementary - S03E01-E02 - Career Day.mkv",
+            )
+        }
+        deleted = []
+        commands = []
+        sonarr = self._make_sonarr(history, episodes, deleted, commands)
+
+        await run_imposter_detector(
+            arr_clients={"Sonarr": sonarr},
+            notifier=notifier,
+            lookback=timedelta(hours=24),
+            tolerance=0.40,
+        )
+
+        assert len(deleted) == 0
+
+    async def test_allows_slightly_longer_episode(self, notifier, notifications):
+        """Episode at 2x expected (double-length finale) should NOT be flagged."""
+        now = datetime.now(timezone.utc).isoformat()
+        history = [{"episodeId": 600, "date": now}]
+        episodes = {
+            600: self._make_episode(
+                600,
+                "Some Show",
+                1,
+                10,
+                "Finale",
+                42,
+                "1:22:00",
+                file_id=1000,
+            )
+        }
+        deleted = []
+        commands = []
+        sonarr = self._make_sonarr(history, episodes, deleted, commands)
+
+        await run_imposter_detector(
+            arr_clients={"Sonarr": sonarr},
+            notifier=notifier,
+            lookback=timedelta(hours=24),
+            tolerance=0.40,
+        )
+
+        assert len(deleted) == 0
+
+    async def test_detects_movie_file_as_imposter(self, notifier, notifications):
+        """A 2h+ movie file labeled as a 51m episode (like Dark S01E01 at 127m)."""
+        now = datetime.now(timezone.utc).isoformat()
+        history = [{"episodeId": 700, "date": now}]
+        episodes = {
+            700: self._make_episode(
+                700,
+                "Dark",
+                1,
+                1,
+                "Secrets",
+                51,
+                "2:06:57",
+                file_id=1100,
+            )
+        }
+        deleted = []
+        commands = []
+        sonarr = self._make_sonarr(history, episodes, deleted, commands)
+
+        await run_imposter_detector(
+            arr_clients={"Sonarr": sonarr},
+            notifier=notifier,
+            lookback=timedelta(hours=24),
+            tolerance=0.40,
+        )
+
+        assert 1100 in deleted
+        assert any(n["event"] == "imposter.detected" for n in notifications)

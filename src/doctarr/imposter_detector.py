@@ -115,10 +115,27 @@ async def run_imposter_detector(
             if actual_runtime is None or actual_runtime < 1:
                 continue
 
-            # Compare
-            diff_ratio = abs(actual_runtime - expected_runtime) / expected_runtime
+            # Skip multi-episode files (E01-E02, E01E02 patterns)
+            file_path_raw = ep_file.get("relativePath", "")
+            if re.search(r"E\d+[-E]+E?\d+", file_path_raw, re.IGNORECASE):
+                continue
 
-            if diff_ratio > tolerance:
+            # Smart comparison:
+            # - If actual is ~2x expected, it's likely a double episode (not imposter)
+            # - If actual is significantly SHORTER than expected, high imposter risk
+            # - If actual is wildly longer (>2.5x), could be a movie file mislabeled
+            ratio = actual_runtime / expected_runtime
+
+            is_imposter = False
+            if ratio < (1 - tolerance):
+                # File is much shorter than expected (e.g., 22m vs 51m)
+                is_imposter = True
+            elif ratio > 2.3:
+                # File is absurdly longer (e.g., 127m vs 51m, but NOT a plausible double)
+                is_imposter = True
+            # ratio between 1-tolerance and 2.3 is normal range (includes doubles up to ~2x)
+
+            if is_imposter:
                 series_title = episode.get("series", {}).get("title", "Unknown")
                 season = episode.get("seasonNumber", 0)
                 ep_num = episode.get("episodeNumber", 0)
@@ -133,7 +150,7 @@ async def run_imposter_detector(
                     ep_title,
                     expected_runtime,
                     actual_runtime,
-                    diff_ratio * 100,
+                    abs(ratio - 1) * 100,
                     file_path,
                 )
 
@@ -169,7 +186,7 @@ async def run_imposter_detector(
                         "name": f"{series_title} S{season:02d}E{ep_num:02d} - {ep_title}",
                         "expected_minutes": expected_runtime,
                         "actual_minutes": f"{actual_runtime:.0f}",
-                        "diff_percent": f"{diff_ratio * 100:.0f}",
+                        "diff_percent": f"{abs(ratio - 1) * 100:.0f}",
                         "file": file_path,
                     },
                 )
