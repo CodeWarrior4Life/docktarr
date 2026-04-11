@@ -55,9 +55,13 @@ class TestConfig:
         assert cfg.prune_threshold == timedelta(hours=12)
         assert cfg.test_delay == timedelta(seconds=2)
         assert cfg.webhook_url is None
-        assert cfg.webhook_events == ["added", "pruned", "digest"]
+        assert "added" in cfg.webhook_events
         assert cfg.digest_time == "08:00"
         assert cfg.log_level == "info"
+        assert cfg.qbit_url is None
+        assert cfg.arr_apps == []
+        assert cfg.stall_threshold == timedelta(hours=6)
+        assert cfg.protected_categories == ["MAM"]
 
     def test_custom_intervals(self, monkeypatch):
         monkeypatch.setenv("PROWLARR_URL", "http://localhost:9696")

@@ -17,6 +17,7 @@ _TEMPLATES = {
         "Active: {total_active} | Degraded: {total_degraded}\n"
         "Added (24h): {added_24h} | Pruned (24h): {pruned_24h}"
     ),
+    "stall.cleared": "**[Doctarr]** Stalled download cleared: **{name}** (idle {idle_hours:.1f}h, {progress}) via {app}",
 }
 
 

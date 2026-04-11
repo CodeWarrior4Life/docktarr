@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([smhd]?)$", re.IGNORECASE)
@@ -36,6 +36,13 @@ def _require_env(name: str) -> str:
 
 
 @dataclass(frozen=True)
+class ArrAppConfig:
+    url: str
+    api_key: str
+    name: str
+
+
+@dataclass(frozen=True)
 class Config:
     prowlarr_url: str
     prowlarr_api_key: str
@@ -49,14 +56,42 @@ class Config:
     digest_time: str
     log_level: str
     tz: str
+    # v0.2: stall detection
+    qbit_url: str | None
+    qbit_username: str | None
+    qbit_password: str | None
+    arr_apps: list[ArrAppConfig]
+    stall_threshold: timedelta
+    stall_interval: timedelta
+    protected_categories: list[str]
 
     @classmethod
     def from_env(cls) -> Config:
         url = _require_env("PROWLARR_URL").rstrip("/")
         api_key = _require_env("PROWLARR_API_KEY")
         webhook_url = os.environ.get("WEBHOOK_URL", "").strip() or None
-        events_raw = os.environ.get("WEBHOOK_EVENTS", "added,pruned,digest").strip()
+        events_raw = os.environ.get(
+            "WEBHOOK_EVENTS", "added,pruned,digest,stall.cleared"
+        ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
+
+        # Build arr app list from env vars
+        arr_apps = []
+        for prefix, name in [
+            ("SONARR", "Sonarr"),
+            ("RADARR", "Radarr"),
+            ("READARR", "Readarr"),
+            ("BOOKSHELF", "Bookshelf"),
+        ]:
+            app_url = os.environ.get(f"{prefix}_URL", "").strip()
+            app_key = os.environ.get(f"{prefix}_API_KEY", "").strip()
+            if app_url and app_key:
+                arr_apps.append(
+                    ArrAppConfig(url=app_url.rstrip("/"), api_key=app_key, name=name)
+                )
+
+        protected_raw = os.environ.get("PROTECTED_CATEGORIES", "MAM").strip()
+        protected = [c.strip() for c in protected_raw.split(",") if c.strip()]
 
         return cls(
             prowlarr_url=url,
@@ -73,4 +108,11 @@ class Config:
             digest_time=os.environ.get("DIGEST_TIME", "08:00").strip(),
             log_level=os.environ.get("LOG_LEVEL", "info").strip().lower(),
             tz=os.environ.get("TZ", "UTC").strip(),
+            qbit_url=os.environ.get("QBITTORRENT_URL", "").strip() or None,
+            qbit_username=os.environ.get("QBITTORRENT_USERNAME", "").strip() or None,
+            qbit_password=os.environ.get("QBITTORRENT_PASSWORD", "").strip() or None,
+            arr_apps=arr_apps,
+            stall_threshold=parse_duration(os.environ.get("STALL_THRESHOLD", "6h")),
+            stall_interval=parse_duration(os.environ.get("STALL_INTERVAL", "1h")),
+            protected_categories=protected,
         )

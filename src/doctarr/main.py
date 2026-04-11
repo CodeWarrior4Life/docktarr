@@ -9,11 +9,14 @@ from pathlib import Path
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from doctarr.arrclient import ArrClient
 from doctarr.config import Config
 from doctarr.discovery import run_discovery
 from doctarr.notifier import Notifier
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
+from doctarr.qbittorrent import QBitClient
+from doctarr.stall_detector import run_stall_detector
 from doctarr.state import IndexerState, IndexerStatus, StateStore
 from doctarr.tester import run_tester
 
@@ -29,7 +32,7 @@ async def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    log.info("Doctarr starting (prowlarr=%s)", config.prowlarr_url)
+    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
 
     http = httpx.AsyncClient(base_url=config.prowlarr_url, timeout=30.0)
     prowlarr = ProwlarrClient(http, api_key=config.prowlarr_api_key)
@@ -52,6 +55,7 @@ async def main() -> None:
 
     scheduler = AsyncIOScheduler(timezone=config.tz)
 
+    # --- Indexer health jobs (v0.1) ---
     scheduler.add_job(
         run_discovery,
         "interval",
@@ -91,6 +95,44 @@ async def main() -> None:
         },
     )
 
+    # --- Stall detection jobs (v0.2) ---
+    qbit = None
+    arr_clients: dict[str, ArrClient] = {}
+
+    if config.qbit_url and config.qbit_username and config.qbit_password:
+        qbit = QBitClient(config.qbit_url, config.qbit_username, config.qbit_password)
+        await qbit.login()
+        log.info("qBittorrent connected at %s", config.qbit_url)
+
+        for app_config in config.arr_apps:
+            arr_clients[app_config.name] = ArrClient(app_config)
+            log.info("Registered *arr app: %s at %s", app_config.name, app_config.url)
+
+        if arr_clients:
+            scheduler.add_job(
+                run_stall_detector,
+                "interval",
+                seconds=config.stall_interval.total_seconds(),
+                id="stall_detector",
+                kwargs={
+                    "qbit": qbit,
+                    "arr_clients": arr_clients,
+                    "notifier": notifier,
+                    "stall_threshold": config.stall_threshold,
+                    "protected_categories": config.protected_categories,
+                },
+            )
+            log.info(
+                "Stall detector enabled (threshold=%s, interval=%s, protected=%s)",
+                config.stall_threshold,
+                config.stall_interval,
+                config.protected_categories,
+            )
+        else:
+            log.warning("No *arr apps configured -- stall detector disabled")
+    else:
+        log.info("qBittorrent not configured -- stall detection disabled")
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(
@@ -104,10 +146,11 @@ async def main() -> None:
 
     scheduler.start()
     log.info(
-        "Scheduler started. Discovery=%s, Tester=%s, Pruner=%s, Digest=%s",
+        "Scheduler started. Discovery=%s, Tester=%s, Pruner=%s, Stall=%s, Digest=%s",
         config.discovery_interval,
         config.test_interval,
         config.prune_interval,
+        config.stall_interval if qbit else "disabled",
         config.digest_time,
     )
 
@@ -122,13 +165,16 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, _signal_handler)
         except NotImplementedError:
-            # Windows doesn't support add_signal_handler
             signal.signal(sig, lambda s, f: _signal_handler())
 
     await stop_event.wait()
 
     scheduler.shutdown(wait=False)
     await http.aclose()
+    if qbit:
+        await qbit.close()
+    for client in arr_clients.values():
+        await client.close()
     log.info("Doctarr stopped")
 
 
@@ -137,13 +183,11 @@ async def _reconcile(prowlarr: ProwlarrClient, state: StateStore, tag_id: int) -
     indexers = await prowlarr.get_indexers_by_tag(tag_id)
     prowlarr_names = {idx["definitionName"] for idx in indexers}
 
-    # Remove state entries for indexers no longer in Prowlarr
     for entry in list(state.all()):
         if entry.definition_name not in prowlarr_names:
             state.remove(entry.definition_name)
             log.info("Reconcile: removed orphan state for %s", entry.definition_name)
 
-    # Add state entries for Prowlarr indexers not in state
     for idx in indexers:
         name = idx["definitionName"]
         if state.get(name) is None:
