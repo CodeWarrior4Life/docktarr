@@ -36,10 +36,28 @@ class ProwlarrClient:
         indexers = await self.get_indexers()
         return [i for i in indexers if tag_id in i.get("tags", [])]
 
+    async def get_app_profile_id(self) -> int:
+        """Get the first available app profile ID (usually 'Standard' = 1)."""
+        resp = await self._client.get("/api/v1/appprofile", headers=self._headers())
+        resp.raise_for_status()
+        profiles = resp.json()
+        if profiles:
+            return profiles[0]["id"]
+        return 1
+
     async def add_indexer(
-        self, schema: dict, tag_ids: list[int], enable: bool = False
+        self,
+        schema: dict,
+        tag_ids: list[int],
+        enable: bool = False,
+        app_profile_id: int = 1,
     ) -> dict:
-        payload = {**schema, "tags": tag_ids, "enable": enable}
+        payload = {
+            **schema,
+            "tags": tag_ids,
+            "enable": enable,
+            "appProfileId": app_profile_id,
+        }
         payload.pop("id", None)
         if not payload.get("name"):
             payload["name"] = payload.get(

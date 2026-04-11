@@ -45,6 +45,8 @@ class TestDiscovery:
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
             method = request.method
+            if path == "/api/v1/appprofile" and method == "GET":
+                return httpx.Response(200, json=[{"id": 1, "name": "Standard"}])
             if path == "/api/v1/indexer/schema" and method == "GET":
                 return httpx.Response(200, json=schemas)
             if path == "/api/v1/indexer" and method == "GET":

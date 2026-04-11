@@ -18,6 +18,7 @@ async def run_discovery(
     """Discover new public indexers from Prowlarr's schema and add as candidates."""
     log.info("Discovery: scanning Prowlarr schema for public indexers")
 
+    app_profile_id = await prowlarr.get_app_profile_id()
     schemas = await prowlarr.get_indexer_schemas()
     public_schemas = [s for s in schemas if is_public_indexer(s)]
     log.info(
@@ -34,7 +35,9 @@ async def run_discovery(
             continue
 
         try:
-            result = await prowlarr.add_indexer(schema, tag_ids=[tag_id], enable=False)
+            result = await prowlarr.add_indexer(
+                schema, tag_ids=[tag_id], enable=False, app_profile_id=app_profile_id
+            )
             prowlarr_id = result["id"]
             state.set(IndexerState.new_candidate(name, prowlarr_id=prowlarr_id))
             added_count += 1
