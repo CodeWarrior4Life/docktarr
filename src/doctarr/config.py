@@ -64,6 +64,10 @@ class Config:
     stall_threshold: timedelta
     stall_interval: timedelta
     protected_categories: list[str]
+    # v0.3: imposter detection
+    imposter_interval: timedelta
+    imposter_tolerance: float
+    imposter_lookback: timedelta
 
     @classmethod
     def from_env(cls) -> Config:
@@ -115,4 +119,9 @@ class Config:
             stall_threshold=parse_duration(os.environ.get("STALL_THRESHOLD", "6h")),
             stall_interval=parse_duration(os.environ.get("STALL_INTERVAL", "1h")),
             protected_categories=protected,
+            imposter_interval=parse_duration(os.environ.get("IMPOSTER_INTERVAL", "1h")),
+            imposter_tolerance=float(os.environ.get("IMPOSTER_TOLERANCE", "0.40")),
+            imposter_lookback=parse_duration(
+                os.environ.get("IMPOSTER_LOOKBACK", "24h")
+            ),
         )

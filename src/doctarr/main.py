@@ -16,6 +16,7 @@ from doctarr.notifier import Notifier
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
 from doctarr.qbittorrent import QBitClient
+from doctarr.imposter_detector import run_imposter_detector
 from doctarr.stall_detector import run_stall_detector
 from doctarr.state import IndexerState, IndexerStatus, StateStore
 from doctarr.tester import run_tester
@@ -132,6 +133,27 @@ async def main() -> None:
             log.warning("No *arr apps configured -- stall detector disabled")
     else:
         log.info("qBittorrent not configured -- stall detection disabled")
+
+    # --- Imposter detection (v0.3) ---
+    if arr_clients.get("Sonarr"):
+        scheduler.add_job(
+            run_imposter_detector,
+            "interval",
+            seconds=config.imposter_interval.total_seconds(),
+            id="imposter_detector",
+            kwargs={
+                "arr_clients": arr_clients,
+                "notifier": notifier,
+                "lookback": config.imposter_lookback,
+                "tolerance": config.imposter_tolerance,
+            },
+        )
+        log.info(
+            "Imposter detector enabled (tolerance=%.0f%%, lookback=%s, interval=%s)",
+            config.imposter_tolerance * 100,
+            config.imposter_lookback,
+            config.imposter_interval,
+        )
 
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))

@@ -18,6 +18,7 @@ _TEMPLATES = {
         "Added (24h): {added_24h} | Pruned (24h): {pruned_24h}"
     ),
     "stall.cleared": "**[Doctarr]** Stalled download cleared: **{name}** (idle {idle_hours:.1f}h, {progress}) via {app}",
+    "imposter.detected": "**[Doctarr]** IMPOSTER DETECTED: **{name}** -- expected {expected_minutes}m, got {actual_minutes}m ({diff_percent}% off). File deleted, re-searching.",
 }
 
 
