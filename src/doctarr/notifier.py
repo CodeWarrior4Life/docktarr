@@ -25,6 +25,10 @@ _TEMPLATES = {
     "disk.warning": "**[Doctarr]** Disk WARNING: **{path}** at {percent_used}% used ({free_gb} GB free of {total_gb} GB)",
     "disk.critical": "**[Doctarr]** Disk CRITICAL: **{path}** at {percent_used}% used ({free_gb} GB free of {total_gb} GB)",
     "service.down": "**[Doctarr]** ARR service DOWN: **{name}** — {reason} ({url})",
+    "hw.none_detected": "**[Doctarr]** No hardware accelerator detected on **{host}**",
+    "hw.degraded": "**[Doctarr]** Hardware accelerator degraded on **{host}**: {reason}",
+    "perms.drift": "**[Doctarr]** Permissions drift on **{path}**: {drift_count} files with wrong ownership (expected {expected_uid}:{expected_gid})",
+    "perms.fixed": "**[Doctarr]** Permissions fixed on **{path}**: {fixed} files now owned by {expected_uid}:{expected_gid}",
 }
 
 

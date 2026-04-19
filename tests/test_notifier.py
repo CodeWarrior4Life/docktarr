@@ -76,3 +76,33 @@ class TestNotifier:
         assert len(captured_requests) == 1
         body = captured_requests[0]["body"]
         assert "25" in body["content"]
+
+
+def test_new_event_types_are_allowed():
+    # The notifier module must recognize each of these event types.
+    # If notifier uses KNOWN_EVENTS set → check membership.
+    # If notifier uses templates dict → check keys.
+    # If notifier is fully permissive → at minimum the templates registry should have entries.
+    from doctarr import notifier as n
+
+    required = {
+        "hw.none_detected",
+        "hw.degraded",
+        "perms.drift",
+        "perms.fixed",
+        "qbit.restarted",
+        "vpn.degraded",
+        "disk.warning",
+        "disk.critical",
+        "service.down",
+    }
+    # Prefer KNOWN_EVENTS if it exists; else check templates attribute.
+    allowed = None
+    for attr in ("KNOWN_EVENTS", "_TEMPLATES", "TEMPLATES", "EVENTS"):
+        if hasattr(n, attr):
+            allowed = getattr(n, attr)
+            if isinstance(allowed, dict):
+                allowed = set(allowed.keys())
+            break
+    assert allowed is not None, "notifier module should expose a known-events surface"
+    assert required.issubset(allowed), f"missing events: {required - allowed}"

@@ -105,3 +105,10 @@ class StateStore:
 
     def all(self) -> list[IndexerState]:
         return list(self._data.values())
+
+    def set_hw_report(self, report) -> None:
+        self._hw_report = report
+
+    @property
+    def hw_report(self):
+        return getattr(self, "_hw_report", None)
