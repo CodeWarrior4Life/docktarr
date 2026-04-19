@@ -11,7 +11,7 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from doctarr.arrclient import ArrClient
-from doctarr.config import Config
+from doctarr.config import Config, parse_duration
 from doctarr.discovery import run_discovery
 from doctarr.docker_manager import DockerManager
 from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
@@ -49,6 +49,7 @@ async def main() -> None:
     # Declared at top level so shutdown block can unconditionally reference them
     ph_ssh: dict[str, SSHClient] = {}
     plex_client = None
+    vpn_http: httpx.AsyncClient | None = None
 
     http = httpx.AsyncClient(base_url=config.prowlarr_url, timeout=30.0)
     prowlarr = ProwlarrClient(http, api_key=config.prowlarr_api_key)
@@ -168,6 +169,129 @@ async def main() -> None:
             config.imposter_tolerance * 100,
             config.imposter_lookback,
             config.imposter_interval,
+        )
+
+    # --- qbit_health (ported from arr-orchestrator, T13) ---
+    docker_mgr: DockerManager | None = None
+    if config.qbit_url and config.qbit_username and config.qbit_password and qbit:
+        from doctarr.qbit_health import run_qbit_health, QbitHealthConfig
+
+        qbit_container = os.environ.get("QBITTORRENT_CONTAINER", "qbittorrent").strip()
+        qbit_health_cfg = QbitHealthConfig(
+            container_name=qbit_container,
+            protected_categories=config.protected_categories,
+        )
+        docker_mgr = DockerManager()
+
+        async def _qbit_health_job():
+            await run_qbit_health(qbit, docker_mgr, notifier, qbit_health_cfg)
+
+        _qbit_health_interval = os.environ.get("QBIT_HEALTH_INTERVAL", "5m")
+        scheduler.add_job(
+            _qbit_health_job,
+            "interval",
+            seconds=parse_duration(_qbit_health_interval).total_seconds(),
+            id="qbit_health",
+        )
+        log.info(
+            "qbit_health enabled (container=%s, interval=%s)",
+            qbit_container,
+            _qbit_health_interval,
+        )
+
+    # --- vpn_health (ported from arr-orchestrator, T14) ---
+    _vpn_healthcheck_url = os.environ.get("VPN_HEALTHCHECK_URL", "").strip()
+    if _vpn_healthcheck_url:
+        from doctarr.vpn_health import run_vpn_health, VpnHealthConfig
+
+        _vpn_container = os.environ.get("VPN_CONTAINER", "gluetun").strip()
+        _vpn_regions_raw = os.environ.get(
+            "VPN_ALLOWED_REGIONS", "CA Toronto,CA Montreal,CA Vancouver"
+        ).strip()
+        _vpn_allowed_regions = [
+            r.strip() for r in _vpn_regions_raw.split(",") if r.strip()
+        ]
+        _vpn_require_pf = os.environ.get(
+            "VPN_REQUIRE_PORT_FORWARDING", "true"
+        ).strip().lower() not in ("0", "false", "no")
+        vpn_health_cfg = VpnHealthConfig(
+            container_name=_vpn_container,
+            healthcheck_url=_vpn_healthcheck_url,
+            allowed_regions=_vpn_allowed_regions,
+            require_port_forwarding=_vpn_require_pf,
+        )
+        if docker_mgr is None:
+            docker_mgr = DockerManager()
+        vpn_http = httpx.AsyncClient(timeout=10.0)
+
+        async def _vpn_health_job():
+            await run_vpn_health(vpn_http, docker_mgr, notifier, vpn_health_cfg)
+
+        _vpn_health_interval = os.environ.get("VPN_HEALTH_INTERVAL", "2m")
+        scheduler.add_job(
+            _vpn_health_job,
+            "interval",
+            seconds=parse_duration(_vpn_health_interval).total_seconds(),
+            id="vpn_health",
+        )
+        log.info(
+            "vpn_health enabled (container=%s, url=%s, interval=%s)",
+            _vpn_container,
+            _vpn_healthcheck_url,
+            _vpn_health_interval,
+        )
+
+    # --- disk_health (ported from arr-orchestrator, T15) ---
+    _disk_paths_raw = os.environ.get("DISK_HEALTH_PATHS", "").strip()
+    if _disk_paths_raw:
+        from doctarr.disk_health import run_disk_health, DiskPath
+
+        _disk_warning_pct = float(os.environ.get("DISK_WARNING_PCT", "85.0"))
+        _disk_critical_pct = float(os.environ.get("DISK_CRITICAL_PCT", "95.0"))
+        _disk_paths = [
+            DiskPath(
+                path=p.strip(),
+                warning_pct=_disk_warning_pct,
+                critical_pct=_disk_critical_pct,
+            )
+            for p in _disk_paths_raw.split(",")
+            if p.strip()
+        ]
+
+        async def _disk_health_job():
+            await run_disk_health(_disk_paths, notifier)
+
+        _disk_health_interval = os.environ.get("DISK_HEALTH_INTERVAL", "10m")
+        scheduler.add_job(
+            _disk_health_job,
+            "interval",
+            seconds=parse_duration(_disk_health_interval).total_seconds(),
+            id="disk_health",
+        )
+        log.info(
+            "disk_health enabled (paths=%s, interval=%s)",
+            _disk_paths_raw,
+            _disk_health_interval,
+        )
+
+    # --- arr_services (ported from arr-orchestrator, T15) ---
+    if arr_clients:
+        from doctarr.arr_services import run_arr_services
+
+        async def _arr_services_job():
+            await run_arr_services(arr_clients, notifier)
+
+        _arr_services_interval = os.environ.get("ARR_SERVICES_INTERVAL", "5m")
+        scheduler.add_job(
+            _arr_services_job,
+            "interval",
+            seconds=parse_duration(_arr_services_interval).total_seconds(),
+            id="arr_services",
+        )
+        log.info(
+            "arr_services enabled (apps=%s, interval=%s)",
+            list(arr_clients.keys()),
+            _arr_services_interval,
         )
 
     # Daily digest
@@ -354,6 +478,8 @@ async def main() -> None:
         await client.close()
     if plex_client is not None:
         await plex_client.close()
+    if vpn_http is not None:
+        await vpn_http.aclose()
     log.info("Doctarr stopped")
 
 
