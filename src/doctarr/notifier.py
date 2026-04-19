@@ -20,6 +20,8 @@ _TEMPLATES = {
     "stall.cleared": "**[Doctarr]** Stalled download cleared: **{name}** (idle {idle_hours:.1f}h, {progress}) via {app}",
     "imposter.detected": "**[Doctarr]** IMPOSTER DETECTED: **{name}** -- expected {expected_minutes}m, got {actual_minutes}m ({diff_percent}% off). File deleted, re-searching.",
     "qbit.restarted": "**[Doctarr]** qBittorrent container **{container_name}** restarted (exit code {exit_code})",
+    "vpn.restarted": "**[Doctarr]** Gluetun container **{container_name}** restarted ({reason})",
+    "vpn.degraded": "**[Doctarr]** VPN degraded: {reason}",
 }
 
 
