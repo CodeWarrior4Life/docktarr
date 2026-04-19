@@ -22,6 +22,9 @@ _TEMPLATES = {
     "qbit.restarted": "**[Doctarr]** qBittorrent container **{container_name}** restarted (exit code {exit_code})",
     "vpn.restarted": "**[Doctarr]** Gluetun container **{container_name}** restarted ({reason})",
     "vpn.degraded": "**[Doctarr]** VPN degraded: {reason}",
+    "disk.warning": "**[Doctarr]** Disk WARNING: **{path}** at {percent_used}% used ({free_gb} GB free of {total_gb} GB)",
+    "disk.critical": "**[Doctarr]** Disk CRITICAL: **{path}** at {percent_used}% used ({free_gb} GB free of {total_gb} GB)",
+    "service.down": "**[Doctarr]** ARR service DOWN: **{name}** — {reason} ({url})",
 }
 
 
