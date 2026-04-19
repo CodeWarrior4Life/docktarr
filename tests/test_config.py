@@ -79,3 +79,17 @@ class TestConfig:
         monkeypatch.setenv("PROWLARR_API_KEY", "test-key")
         cfg = Config.from_env()
         assert cfg.prowlarr_url == "http://localhost:9696"
+
+
+def test_config_loads_yaml_if_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROWLARR_URL", "http://prowlarr:9696")
+    monkeypatch.setenv("PROWLARR_API_KEY", "xyz")
+    yaml_path = tmp_path / "doctarr.yaml"
+    yaml_path.write_text(
+        "hw_capability:\n  enabled: true\n  hosts:\n    - name: zion\n"
+    )
+    from doctarr.config import Config
+
+    cfg = Config.from_env_and_yaml(yaml_path)
+    assert cfg.yaml.hw_capability is not None
+    assert cfg.yaml.hw_capability.enabled is True

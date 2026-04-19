@@ -12,11 +12,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from doctarr.arrclient import ArrClient
 from doctarr.config import Config
 from doctarr.discovery import run_discovery
+from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
 from doctarr.notifier import Notifier
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
 from doctarr.qbittorrent import QBitClient
 from doctarr.imposter_detector import run_imposter_detector
+from doctarr.ssh_client import SSHClient, resolve_ssh_ref
 from doctarr.stall_detector import run_stall_detector
 from doctarr.state import IndexerState, IndexerStatus, StateStore
 from doctarr.tester import run_tester
@@ -25,7 +27,7 @@ log = logging.getLogger("doctarr")
 
 
 async def main() -> None:
-    config = Config.from_env()
+    config = Config.from_env_and_yaml()
 
     logging.basicConfig(
         level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -166,6 +168,27 @@ async def main() -> None:
         kwargs={"state": state, "notifier": notifier},
     )
 
+    # --- HW capability (v0.4) ---
+    hw_clients: dict[str, SSHClient] = {}
+    if config.yaml.hw_capability and config.yaml.hw_capability.enabled:
+        for host_ref in config.yaml.hw_capability.hosts:
+            if host_ref.ssh_ref:
+                ref = resolve_ssh_ref(host_ref.ssh_ref, host=host_ref.name)
+                hw_clients[host_ref.name] = SSHClient(ref)
+
+        scheduler.add_job(
+            _hw_capability_job,
+            "cron",
+            **_parse_cron(config.yaml.hw_capability.schedule),
+            id="hw_capability",
+            kwargs={"hosts": hw_clients, "state": state, "notifier": notifier},
+        )
+        log.info(
+            "HW capability detector enabled (schedule=%s, hosts=%d)",
+            config.yaml.hw_capability.schedule,
+            len(hw_clients),
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started. Discovery=%s, Tester=%s, Pruner=%s, Stall=%s, Digest=%s",
@@ -196,6 +219,8 @@ async def main() -> None:
     if qbit:
         await qbit.close()
     for client in arr_clients.values():
+        await client.close()
+    for client in hw_clients.values():
         await client.close()
     log.info("Doctarr stopped")
 
@@ -242,3 +267,27 @@ async def _send_digest(state: StateStore, notifier: Notifier) -> None:
             "pruned_24h": 0,
         },
     )
+
+
+def _parse_cron(expr: str) -> dict:
+    """Parse '0 3 * * *' -> kwargs for AsyncIOScheduler.add_job('cron', ...)."""
+    parts = expr.split()
+    if len(parts) != 5:
+        raise ValueError(f"Invalid cron: {expr!r}")
+    return dict(
+        minute=parts[0],
+        hour=parts[1],
+        day=parts[2],
+        month=parts[3],
+        day_of_week=parts[4],
+    )
+
+
+async def _hw_capability_job(hosts, state, notifier):
+    report = await run_hw_capability(hosts)
+    # Store report on state for consumption by /health endpoint + media_container_audit (T9, T16)
+    if hasattr(state, "set_hw_report"):
+        state.set_hw_report(report)
+    for host, accelerators in report.by_host.items():
+        if not accelerators:
+            await notifier.emit("hw.none_detected", {"host": host})
