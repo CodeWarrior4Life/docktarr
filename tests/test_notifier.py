@@ -90,6 +90,7 @@ def test_new_event_types_are_allowed():
         "hw.degraded",
         "perms.drift",
         "perms.fixed",
+        "perms.skipped_hardlinks",
         "qbit.restarted",
         "vpn.degraded",
         "disk.warning",

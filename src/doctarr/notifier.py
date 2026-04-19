@@ -29,6 +29,7 @@ _TEMPLATES = {
     "hw.degraded": "**[Doctarr]** Hardware accelerator degraded on **{host}**: {reason}",
     "perms.drift": "**[Doctarr]** Permissions drift on **{path}**: {drift_count} files with wrong ownership (expected {expected_uid}:{expected_gid})",
     "perms.fixed": "**[Doctarr]** Permissions fixed on **{path}**: {fixed} files now owned by {expected_uid}:{expected_gid}",
+    "perms.skipped_hardlinks": "**[Doctarr]** Skipped {count} hardlinked files during chown (MAM safety). Sample paths: {sample_paths}",
 }
 
 

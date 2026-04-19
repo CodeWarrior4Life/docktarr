@@ -1,5 +1,10 @@
 # Changelog
 
+## Safety (0.4.0 hardening commit)
+- `permissions_health`: hardlink-aware chown — files with `nlink > 1` are skipped to prevent incidentally mutating inodes referenced by MAM/qBit torrent files. Documented MAM compliance in README.
+
+---
+
 ## 0.4.0 (2026-04-19)
 
 ### New Modules

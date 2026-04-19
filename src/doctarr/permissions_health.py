@@ -17,6 +17,7 @@ class FileStat:
     uid: int
     gid: int
     mode: int
+    nlink: int
     path: str
 
 
@@ -26,6 +27,7 @@ class PermissionFinding:
     observed_uid: int
     observed_gid: int
     observed_mode: int
+    observed_nlink: int
     expected_uid: int
     expected_gid: int
     reason: Reason
@@ -48,8 +50,8 @@ class PermissionReport:
 def parse_find_output(output: str) -> list[FileStat]:
     entries: list[FileStat] = []
     for line in output.splitlines():
-        parts = line.strip().split(" ", 3)
-        if len(parts) != 4:
+        parts = line.strip().split(" ", 4)
+        if len(parts) != 5:
             continue
         try:
             entries.append(
@@ -57,7 +59,8 @@ def parse_find_output(output: str) -> list[FileStat]:
                     uid=int(parts[0]),
                     gid=int(parts[1]),
                     mode=int(parts[2], 8),
-                    path=parts[3],
+                    nlink=int(parts[3]),
+                    path=parts[4],
                 )
             )
         except ValueError:
@@ -88,6 +91,7 @@ def tally_report(
                     observed_uid=e.uid,
                     observed_gid=e.gid,
                     observed_mode=e.mode,
+                    observed_nlink=e.nlink,
                     expected_uid=cfg.expected_uid,
                     expected_gid=cfg.expected_gid,
                     reason=reason,
@@ -118,7 +122,7 @@ _EXCLUDES = [
 
 def _build_find_cmd(path: str) -> str:
     excludes = " ".join(f"-not -path '*{e}*'" for e in _EXCLUDES)
-    return f"find {path} -type f {excludes} -printf '%u %g %m %p\\n'"
+    return f"find {path} -type f {excludes} -printf '%u %g %m %n %p\\n'"
 
 
 async def scan_path(
@@ -148,6 +152,8 @@ class FixReport:
     would_fix: int
     failed: int
     exceeded_rate_limit: bool
+    skipped_hardlinks: int = 0
+    skipped_paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -157,23 +163,53 @@ async def apply_fixes(
     *,
     dry_run: bool,
     max_files: int = 5000,
+    notifier=None,
 ) -> FixReport:
-    if len(findings) > max_files:
+    # Partition: files with nlink > 1 share an inode with another path (e.g. ARR hardlink
+    # into a downloads dir used by qBittorrent/MAM). Chowning them changes the inode owner
+    # and can break seeding. Skip them entirely.
+    safe_findings = [f for f in findings if f.observed_nlink == 1]
+    hardlink_findings = [f for f in findings if f.observed_nlink > 1]
+
+    if hardlink_findings:
+        log.info(
+            "perms: skipped %d hardlinked files (MAM safety)", len(hardlink_findings)
+        )
+        if notifier:
+            sample_paths = [f.path for f in hardlink_findings[:10]]
+            await notifier.emit(
+                "perms.skipped_hardlinks",
+                {"count": len(hardlink_findings), "sample_paths": sample_paths},
+            )
+
+    if len(safe_findings) > max_files:
         log.warning(
             "perms: %d findings exceeds max_files=%d; emitting ticket instead of fix",
-            len(findings),
+            len(safe_findings),
             max_files,
         )
-        return FixReport(fixed=0, would_fix=0, failed=0, exceeded_rate_limit=True)
+        return FixReport(
+            fixed=0,
+            would_fix=0,
+            failed=0,
+            exceeded_rate_limit=True,
+            skipped_hardlinks=len(hardlink_findings),
+            skipped_paths=[f.path for f in hardlink_findings[:10]],
+        )
 
     if dry_run:
         return FixReport(
-            fixed=0, would_fix=len(findings), failed=0, exceeded_rate_limit=False
+            fixed=0,
+            would_fix=len(safe_findings),
+            failed=0,
+            exceeded_rate_limit=False,
+            skipped_hardlinks=len(hardlink_findings),
+            skipped_paths=[f.path for f in hardlink_findings[:10]],
         )
 
     # Group by (uid, gid) target to batch chown calls
     groups: dict[tuple[int, int], list[str]] = {}
-    for f in findings:
+    for f in safe_findings:
         key = (f.expected_uid, f.expected_gid)
         groups.setdefault(key, []).append(f.path)
 
@@ -200,6 +236,8 @@ async def apply_fixes(
         would_fix=0,
         failed=failed,
         exceeded_rate_limit=False,
+        skipped_hardlinks=len(hardlink_findings),
+        skipped_paths=[f.path for f in hardlink_findings[:10]],
         errors=errors,
     )
 
@@ -235,6 +273,20 @@ async def run_permissions_health(
             )
             continue
 
+        # MAM compliance guard: warn if the configured path looks like a raw downloads dir.
+        # Chowning files in a downloads directory changes inodes shared with qBit torrent
+        # files, which can stop seeding and tank MAM ratio. Operator must set auto_fix=false
+        # on such paths. We warn here rather than abort — a non-MAM downloads path may be
+        # legitimate.
+        path_lower = path_cfg.path.lower()
+        if "downloads" in path_lower or "mam" in path_lower:
+            log.warning(
+                "perms: path %r appears to target a downloads directory; MAM compliance "
+                "requires this NEVER touches raw download dirs. Configure auto_fix=false "
+                "on such paths.",
+                path_cfg.path,
+            )
+
         remote_path = translate_path(path_cfg.path, cfg.fix_path_translation)
         report = await scan_path(fix_ssh, path_cfg, remote_path)
         reports.append(report)
@@ -261,7 +313,11 @@ async def run_permissions_health(
 
         if path_cfg.auto_fix and report.findings:
             fix_result = await apply_fixes(
-                fix_ssh, report.findings, dry_run=False, max_files=5000
+                fix_ssh,
+                report.findings,
+                dry_run=False,
+                max_files=5000,
+                notifier=notifier,
             )
             log.info(
                 "perms[%s]: fixed=%d failed=%d",

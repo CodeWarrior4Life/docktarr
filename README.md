@@ -141,6 +141,15 @@ permissions_health:
 
 Events emitted: `perms.drift_detected`, `perms.fix_applied`, `perms.fix_failed`.
 
+### MAM Compliance
+
+**Never point `paths:` at raw download directories** (e.g. `/data/Downloads`). ARR apps hardlink imported files — the library-side file and the download-side file share an inode. Chowning the library file changes the inode owner for both, which can prevent qBittorrent from reading the torrent data and stops seeding. On private trackers like MyAnonaMouse (MAM), losing seed time below ratio thresholds triggers account consequences.
+
+Doctarr enforces two safeguards automatically:
+
+1. **Hardlink skip**: any file with `nlink > 1` (i.e. referenced from more than one path) is silently skipped during `auto_fix`. A `perms.skipped_hardlinks` webhook event fires with a count and sample paths so you can investigate.
+2. **Downloads-path warning**: if a configured path contains `downloads` or `mam` (case-insensitive), Doctarr logs a WARNING at scan time reminding you to set `auto_fix: false`.
+
 ## Consolidating arr-orchestrator
 
 Doctarr 0.4 folds the arr-orchestrator jobs into the same process. No separate deployment needed:
