@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from doctarr.arrclient import ArrClient
 from doctarr.config import Config
 from doctarr.discovery import run_discovery
+from doctarr.docker_manager import DockerManager
 from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
+from doctarr.http_health import HealthServer, HealthState
+from doctarr.media_container_audit import run_media_container_audit
 from doctarr.notifier import Notifier
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
@@ -36,6 +40,10 @@ async def main() -> None:
     )
 
     log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+
+    health_state = HealthState()
+    health_server = HealthServer(state=health_state)
+    await health_server.start()
 
     http = httpx.AsyncClient(base_url=config.prowlarr_url, timeout=30.0)
     prowlarr = ProwlarrClient(http, api_key=config.prowlarr_api_key)
@@ -181,12 +189,84 @@ async def main() -> None:
             "cron",
             **_parse_cron(config.yaml.hw_capability.schedule),
             id="hw_capability",
-            kwargs={"hosts": hw_clients, "state": state, "notifier": notifier},
+            kwargs={
+                "hosts": hw_clients,
+                "state": state,
+                "notifier": notifier,
+                "health_state": health_state,
+            },
         )
         log.info(
             "HW capability detector enabled (schedule=%s, hosts=%d)",
             config.yaml.hw_capability.schedule,
             len(hw_clients),
+        )
+
+    # --- media_container_audit (v0.4) ---
+    if config.yaml.media_container_audit and config.yaml.media_container_audit.enabled:
+        audit_docker: dict[str, DockerManager] = {}
+        audit_ssh: dict[str, SSHClient] = {}
+        local_host = os.environ.get("DOCTARR_HOST_NAME", "zion")
+        for spec in config.yaml.media_container_audit.containers:
+            # Reuse SSH client from hw_capability if same host
+            if spec.host not in audit_ssh and spec.host in hw_clients:
+                audit_ssh[spec.host] = hw_clients[spec.host]
+            elif spec.host not in audit_ssh:
+                # Look up ssh_ref from yaml hosts
+                host_ref = next(
+                    (
+                        h
+                        for h in (
+                            config.yaml.hw_capability.hosts
+                            if config.yaml.hw_capability
+                            else []
+                        )
+                        if h.name == spec.host
+                    ),
+                    None,
+                )
+                if host_ref and host_ref.ssh_ref:
+                    ref = resolve_ssh_ref(host_ref.ssh_ref, host=host_ref.name)
+                    audit_ssh[spec.host] = SSHClient(ref)
+            # DockerManager for local host only (Phase 1 limitation)
+            if spec.host == local_host and spec.host not in audit_docker:
+                audit_docker[spec.host] = DockerManager()
+
+        async def _audit_job():
+            # Pull hw_report from state if available, else empty
+            hw_report = getattr(state, "hw_report", None)
+            if hw_report is None:
+                hw_report = HWCapabilityReport()
+            findings = await run_media_container_audit(
+                containers=config.yaml.media_container_audit.containers,
+                docker_managers=audit_docker,
+                ssh_clients=audit_ssh,
+                hw_report=hw_report,
+                notifier=notifier,
+            )
+            health_state.record_audit_findings(
+                [
+                    {
+                        "container": f.container,
+                        "host": f.host,
+                        "status": f.status.value,
+                        "reason": f.reason,
+                        "hint": f.remediation_hint,
+                    }
+                    for f in findings
+                ]
+            )
+
+        scheduler.add_job(
+            _audit_job,
+            "cron",
+            **_parse_cron(config.yaml.media_container_audit.schedule),
+            id="media_container_audit",
+        )
+        log.info(
+            "media_container_audit enabled (schedule=%s, containers=%d)",
+            config.yaml.media_container_audit.schedule,
+            len(config.yaml.media_container_audit.containers),
         )
 
     scheduler.start()
@@ -215,6 +295,7 @@ async def main() -> None:
     await stop_event.wait()
 
     scheduler.shutdown(wait=False)
+    await health_server.stop()
     await http.aclose()
     if qbit:
         await qbit.close()
@@ -283,11 +364,30 @@ def _parse_cron(expr: str) -> dict:
     )
 
 
-async def _hw_capability_job(hosts, state, notifier):
+async def _hw_capability_job(hosts, state, notifier, health_state: HealthState):
     report = await run_hw_capability(hosts)
     # Store report on state for consumption by /health endpoint + media_container_audit (T9, T16)
     if hasattr(state, "set_hw_report"):
         state.set_hw_report(report)
+    # Publish a serializable view into /health
+    health_state.record_hw(
+        {
+            host: [
+                {
+                    "kind": a.kind,
+                    "vendor": a.vendor,
+                    "model": a.model,
+                    "device_paths": list(a.device_paths),
+                    "codecs_decode": list(a.codecs_decode),
+                    "codecs_encode": list(a.codecs_encode),
+                    "hdr_tone_mapping": a.hdr_tone_mapping,
+                    "driver_version": a.driver_version,
+                }
+                for a in accs
+            ]
+            for host, accs in report.by_host.items()
+        }
+    )
     for host, accelerators in report.by_host.items():
         if not accelerators:
             await notifier.emit("hw.none_detected", {"host": host})
