@@ -137,3 +137,81 @@ async def scan_path(
         )
     entries = parse_find_output(result.stdout)
     return tally_report(cfg, entries)
+
+
+import shlex
+
+
+@dataclass(frozen=True)
+class FixReport:
+    fixed: int
+    would_fix: int
+    failed: int
+    exceeded_rate_limit: bool
+    errors: list[str] = field(default_factory=list)
+
+
+async def apply_fixes(
+    ssh: SSHClient,
+    findings: list[PermissionFinding],
+    *,
+    dry_run: bool,
+    max_files: int = 5000,
+) -> FixReport:
+    if len(findings) > max_files:
+        log.warning(
+            "perms: %d findings exceeds max_files=%d; emitting ticket instead of fix",
+            len(findings),
+            max_files,
+        )
+        return FixReport(fixed=0, would_fix=0, failed=0, exceeded_rate_limit=True)
+
+    if dry_run:
+        return FixReport(
+            fixed=0, would_fix=len(findings), failed=0, exceeded_rate_limit=False
+        )
+
+    # Group by (uid, gid) target to batch chown calls
+    groups: dict[tuple[int, int], list[str]] = {}
+    for f in findings:
+        key = (f.expected_uid, f.expected_gid)
+        groups.setdefault(key, []).append(f.path)
+
+    fixed = 0
+    failed = 0
+    errors: list[str] = []
+    for (uid, gid), paths in groups.items():
+        # Safely quote each path, chunk into batches of 100 to keep commands short
+        for i in range(0, len(paths), 100):
+            batch = paths[i : i + 100]
+            quoted = " ".join(shlex.quote(p) for p in batch)
+            cmd = f"chown {uid}:{gid} -- {quoted}"
+            result = await ssh.run(cmd, sudo=True, timeout=60.0)
+            if result.exit_code == 0:
+                fixed += len(batch)
+            else:
+                failed += len(batch)
+                errors.append(
+                    f"chown batch failed ({result.exit_code}): {result.stderr[:200]}"
+                )
+
+    return FixReport(
+        fixed=fixed,
+        would_fix=0,
+        failed=failed,
+        exceeded_rate_limit=False,
+        errors=errors,
+    )
+
+
+def translate_path(path: str, translation: dict[str, str]) -> str:
+    """Translate doctarr-visible path to remote-host path using longest-prefix match."""
+    best_prefix = ""
+    best_replacement = ""
+    for prefix, replacement in translation.items():
+        if path.startswith(prefix) and len(prefix) > len(best_prefix):
+            best_prefix = prefix
+            best_replacement = replacement
+    if best_prefix:
+        return best_replacement + path[len(best_prefix) :]
+    return path
