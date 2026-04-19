@@ -31,22 +31,32 @@ from doctarr.tester import run_tester
 log = logging.getLogger("doctarr")
 
 
-async def main() -> None:
-    config = Config.from_env_and_yaml()
+async def _build_scheduler_for_test(
+    yaml_path: "Path | str | None" = None,
+) -> tuple:
+    """Build scheduler + health_state WITHOUT starting the scheduler or health server.
 
-    logging.basicConfig(
-        level=getattr(logging, config.log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    Used by integration tests to verify wire-up without hitting real network resources.
+    When DOCTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
+    (prowlarr.ensure_tag, _reconcile, qbit.login).
+
+    Returns (scheduler, health_state, http, qbit, arr_clients, hw_clients, ph_ssh,
+             plex_client, vpn_http) — callers are responsible for cleanup.
+    """
+    skip_network = os.environ.get("DOCTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
 
-    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+    if yaml_path is not None:
+        config = Config.from_env_and_yaml(yaml_path)
+    else:
+        config = Config.from_env_and_yaml()
 
     health_state = HealthState()
-    health_server = HealthServer(state=health_state)
-    await health_server.start()
 
-    # Declared at top level so shutdown block can unconditionally reference them
+    # Declared so shutdown block can unconditionally reference them
     ph_ssh: dict[str, SSHClient] = {}
     plex_client = None
     vpn_http: httpx.AsyncClient | None = None
@@ -61,12 +71,15 @@ async def main() -> None:
         enabled_events=config.webhook_events,
     )
 
-    # Ensure doctarr tag exists
-    tag_id = await prowlarr.ensure_tag("doctarr")
-    log.info("Using Prowlarr tag 'doctarr' (id=%d)", tag_id)
-
-    # Reconcile state with Prowlarr on startup
-    await _reconcile(prowlarr, state, tag_id)
+    if skip_network:
+        tag_id = 0
+        log.info("DOCTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
+    else:
+        # Ensure doctarr tag exists
+        tag_id = await prowlarr.ensure_tag("doctarr")
+        log.info("Using Prowlarr tag 'doctarr' (id=%d)", tag_id)
+        # Reconcile state with Prowlarr on startup
+        await _reconcile(prowlarr, state, tag_id)
 
     delay_secs = config.test_delay.total_seconds()
 
@@ -118,8 +131,11 @@ async def main() -> None:
 
     if config.qbit_url and config.qbit_username and config.qbit_password:
         qbit = QBitClient(config.qbit_url, config.qbit_username, config.qbit_password)
-        await qbit.login()
-        log.info("qBittorrent connected at %s", config.qbit_url)
+        if skip_network:
+            log.info("DOCTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
+        else:
+            await qbit.login()
+            log.info("qBittorrent connected at %s", config.qbit_url)
 
         for app_config in config.arr_apps:
             arr_clients[app_config.name] = ArrClient(app_config)
@@ -439,6 +455,47 @@ async def main() -> None:
             len(ph.paths),
             ph.fix_host,
         )
+
+    return (
+        scheduler,
+        health_state,
+        http,
+        qbit,
+        arr_clients,
+        hw_clients,
+        ph_ssh,
+        plex_client,
+        vpn_http,
+    )
+
+
+async def main() -> None:
+    # Parse config first so log level is applied before the helper runs
+    config = Config.from_env_and_yaml()
+
+    logging.basicConfig(
+        level=getattr(logging, config.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+
+    # Build scheduler and all components (skips network if DOCTARR_SKIP_NETWORK_INIT=1)
+    (
+        scheduler,
+        health_state,
+        http,
+        qbit,
+        arr_clients,
+        hw_clients,
+        ph_ssh,
+        plex_client,
+        vpn_http,
+    ) = await _build_scheduler_for_test()
+
+    health_server = HealthServer(state=health_state)
+    await health_server.start()
 
     scheduler.start()
     log.info(
