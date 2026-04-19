@@ -215,3 +215,68 @@ def translate_path(path: str, translation: dict[str, str]) -> str:
     if best_prefix:
         return best_replacement + path[len(best_prefix) :]
     return path
+
+
+async def run_permissions_health(
+    cfg,  # PermissionHealthConfig from yaml_config
+    ssh_clients: dict[str, SSHClient],
+    plex_client=None,  # Optional PlexClient
+    notifier=None,
+) -> list[PermissionReport]:
+    reports: list[PermissionReport] = []
+    fix_ssh = ssh_clients.get(cfg.fix_host) if cfg.fix_host else None
+
+    for path_cfg in cfg.paths:
+        if not fix_ssh:
+            log.error(
+                "perms: no SSH client for fix_host=%s; skipping %s",
+                cfg.fix_host,
+                path_cfg.name,
+            )
+            continue
+
+        remote_path = translate_path(path_cfg.path, cfg.fix_path_translation)
+        report = await scan_path(fix_ssh, path_cfg, remote_path)
+        reports.append(report)
+
+        log.info(
+            "perms[%s]: status=%s total=%d drift=%d (%.1f%%)",
+            path_cfg.name,
+            report.status,
+            report.total_files,
+            len(report.findings),
+            report.drift_pct,
+        )
+
+        if report.status == "error" and notifier:
+            await notifier.emit(
+                "perms.drift",
+                {
+                    "path": path_cfg.name,
+                    "drift_pct": report.drift_pct,
+                    "total": report.total_files,
+                    "drift_count": len(report.findings),
+                },
+            )
+
+        if path_cfg.auto_fix and report.findings:
+            fix_result = await apply_fixes(
+                fix_ssh, report.findings, dry_run=False, max_files=5000
+            )
+            log.info(
+                "perms[%s]: fixed=%d failed=%d",
+                path_cfg.name,
+                fix_result.fixed,
+                fix_result.failed,
+            )
+            if fix_result.fixed > 0 and plex_client:
+                # Trigger Plex library refresh; path→section resolution is caller's problem
+                # For Phase 1 we refresh all sections
+                try:
+                    sections = await plex_client.library_sections()
+                    for s in sections:
+                        if s.get("key"):
+                            await plex_client.refresh_section(int(s["key"]))
+                except Exception as e:
+                    log.warning("perms: Plex refresh failed: %s", e)
+    return reports

@@ -18,6 +18,7 @@ from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
 from doctarr.http_health import HealthServer, HealthState
 from doctarr.media_container_audit import run_media_container_audit
 from doctarr.notifier import Notifier
+from doctarr.permissions_health import run_permissions_health
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
 from doctarr.qbittorrent import QBitClient
@@ -44,6 +45,10 @@ async def main() -> None:
     health_state = HealthState()
     health_server = HealthServer(state=health_state)
     await health_server.start()
+
+    # Declared at top level so shutdown block can unconditionally reference them
+    ph_ssh: dict[str, SSHClient] = {}
+    plex_client = None
 
     http = httpx.AsyncClient(base_url=config.prowlarr_url, timeout=30.0)
     prowlarr = ProwlarrClient(http, api_key=config.prowlarr_api_key)
@@ -269,6 +274,48 @@ async def main() -> None:
             len(config.yaml.media_container_audit.containers),
         )
 
+    # --- permissions_health (v0.4) ---
+    if config.yaml.permission_health and config.yaml.permission_health.enabled:
+        ph = config.yaml.permission_health
+        if ph.fix_host and ph.fix_credential_ref:
+            ref = resolve_ssh_ref(ph.fix_credential_ref, host=ph.fix_host)
+            ph_ssh[ph.fix_host] = SSHClient(ref)
+
+        # Optional Plex client for refresh trigger
+        plex_url = os.environ.get("PLEX_URL", "").strip()
+        plex_token = os.environ.get("PLEX_TOKEN", "").strip()
+        if plex_url and plex_token:
+            from doctarr.plex_api import PlexClient
+
+            plex_client = PlexClient(plex_url, plex_token)
+
+        async def _perms_job():
+            reports = await run_permissions_health(ph, ph_ssh, plex_client, notifier)
+            health_state.record_permission_findings(
+                [
+                    {
+                        "path": r.path_config.name,
+                        "total": r.total_files,
+                        "drift": len(r.findings),
+                        "status": r.status,
+                    }
+                    for r in reports
+                ]
+            )
+
+        scheduler.add_job(
+            _perms_job,
+            "cron",
+            **_parse_cron(ph.schedule),
+            id="permissions_health",
+        )
+        log.info(
+            "permissions_health enabled (schedule=%s, paths=%d, fix_host=%s)",
+            ph.schedule,
+            len(ph.paths),
+            ph.fix_host,
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started. Discovery=%s, Tester=%s, Pruner=%s, Stall=%s, Digest=%s",
@@ -303,6 +350,10 @@ async def main() -> None:
         await client.close()
     for client in hw_clients.values():
         await client.close()
+    for client in ph_ssh.values():
+        await client.close()
+    if plex_client is not None:
+        await plex_client.close()
     log.info("Doctarr stopped")
 
 
