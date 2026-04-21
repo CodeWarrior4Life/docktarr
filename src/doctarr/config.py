@@ -72,6 +72,8 @@ class Config:
     imposter_interval: timedelta
     imposter_tolerance: float
     imposter_lookback: timedelta
+    imposter_backfill_enabled: bool
+    imposter_backfill_interval: timedelta
     # v0.4: YAML-driven config
     yaml: YamlConfig = field(default_factory=YamlConfig)
 
@@ -129,6 +131,15 @@ class Config:
             imposter_tolerance=float(os.environ.get("IMPOSTER_TOLERANCE", "0.40")),
             imposter_lookback=parse_duration(
                 os.environ.get("IMPOSTER_LOOKBACK", "24h")
+            ),
+            imposter_backfill_enabled=os.environ.get(
+                "IMPOSTER_BACKFILL_ENABLED", "true"
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "no"),
+            imposter_backfill_interval=parse_duration(
+                os.environ.get("IMPOSTER_BACKFILL_INTERVAL", "7d")
             ),
         )
 

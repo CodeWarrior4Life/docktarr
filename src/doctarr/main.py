@@ -22,7 +22,7 @@ from doctarr.permissions_health import run_permissions_health
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
 from doctarr.qbittorrent import QBitClient
-from doctarr.imposter_detector import run_imposter_detector
+from doctarr.imposter_detector import run_imposter_backfill, run_imposter_detector
 from doctarr.ssh_client import SSHClient, resolve_ssh_ref
 from doctarr.stall_detector import run_stall_detector
 from doctarr.state import IndexerState, IndexerStatus, StateStore
@@ -186,6 +186,23 @@ async def _build_scheduler_for_test(
             config.imposter_lookback,
             config.imposter_interval,
         )
+
+        if config.imposter_backfill_enabled:
+            scheduler.add_job(
+                run_imposter_backfill,
+                "interval",
+                seconds=config.imposter_backfill_interval.total_seconds(),
+                id="imposter_backfill",
+                kwargs={
+                    "arr_clients": arr_clients,
+                    "notifier": notifier,
+                    "tolerance": config.imposter_tolerance,
+                },
+            )
+            log.info(
+                "Imposter backfill enabled (interval=%s)",
+                config.imposter_backfill_interval,
+            )
 
     # --- qbit_health (ported from arr-orchestrator, T13) ---
     docker_mgr: DockerManager | None = None
