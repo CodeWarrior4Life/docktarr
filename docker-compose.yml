@@ -1,8 +1,8 @@
 # Example: add to your existing *arr docker-compose stack
 services:
-  doctarr:
-    image: ghcr.io/codewarrior4life/doctarr:0.4.0
-    container_name: doctarr
+  docktarr:
+    image: ghcr.io/codewarrior4life/docktarr:0.4.0
+    container_name: docktarr
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -47,6 +47,6 @@ services:
       # - DOCTARR_HOST_NAME=morpheus
       # - DOCTARR_SKIP_NETWORK_INIT=false
     volumes:
-      - ./config/doctarr:/config
-      - ./config/doctarr.yaml:/config/doctarr.yaml:ro
+      - ./config/docktarr:/config
+      - ./config/docktarr.yaml:/config/docktarr.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock  # for local DockerManager
