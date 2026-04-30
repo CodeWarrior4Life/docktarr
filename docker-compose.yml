@@ -44,8 +44,8 @@ services:
       # - DIGEST_TIME=08:00
       # - LOG_LEVEL=info
       # Host identity (optional)
-      # - DOCTARR_HOST_NAME=morpheus
-      # - DOCTARR_SKIP_NETWORK_INIT=false
+      # - DOCKTARR_HOST_NAME=morpheus
+      # - DOCKTARR_SKIP_NETWORK_INIT=false
     volumes:
       - ./config/docktarr:/config
       - ./config/docktarr.yaml:/config/docktarr.yaml:ro

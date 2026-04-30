@@ -86,8 +86,8 @@ Docktarr runs four independent jobs:
 | `HW_CAPABILITY_INTERVAL` | No | `24h` | Hardware capability scan interval |
 | `MEDIA_AUDIT_INTERVAL` | No | `12h` | Media container audit interval |
 | `PERMS_HEALTH_INTERVAL` | No | `6h` | Permissions health scan interval |
-| `DOCTARR_HOST_NAME` | No | - | Override detected hostname for SSH routing |
-| `DOCTARR_SKIP_NETWORK_INIT` | No | `false` | Skip SSH connectivity check on startup |
+| `DOCKTARR_HOST_NAME` | No | - | Override detected hostname for SSH routing |
+| `DOCKTARR_SKIP_NETWORK_INIT` | No | `false` | Skip SSH connectivity check on startup |
 
 ## Webhook Events
 

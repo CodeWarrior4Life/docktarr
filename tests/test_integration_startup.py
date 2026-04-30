@@ -49,7 +49,7 @@ permission_health:
     monkeypatch.setenv("PROWLARR_API_KEY", "x")
     monkeypatch.setenv("ZION_SUDO_PASSWORD", "p")
     monkeypatch.setenv("MEGACITY_SUDO_PASSWORD", "p")
-    monkeypatch.setenv("DOCTARR_SKIP_NETWORK_INIT", "1")
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
 
     from docktarr.main import _build_scheduler_for_test
 
@@ -82,7 +82,7 @@ async def test_scheduler_minimal_config(tmp_path, monkeypatch):
     """Minimal env (no YAML modules) still registers core jobs."""
     monkeypatch.setenv("PROWLARR_URL", "http://prowlarr.invalid:9696")
     monkeypatch.setenv("PROWLARR_API_KEY", "x")
-    monkeypatch.setenv("DOCTARR_SKIP_NETWORK_INIT", "1")
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
 
     # Point at an empty yaml path (file doesn't exist — load_yaml_config returns defaults)
     yaml_path = tmp_path / "empty.yaml"

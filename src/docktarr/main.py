@@ -37,13 +37,13 @@ async def _build_scheduler_for_test(
     """Build scheduler + health_state WITHOUT starting the scheduler or health server.
 
     Used by integration tests to verify wire-up without hitting real network resources.
-    When DOCTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
+    When DOCKTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
     (prowlarr.ensure_tag, _reconcile, qbit.login).
 
     Returns (scheduler, health_state, http, qbit, arr_clients, hw_clients, ph_ssh,
              plex_client, vpn_http) — callers are responsible for cleanup.
     """
-    skip_network = os.environ.get("DOCTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
+    skip_network = os.environ.get("DOCKTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -73,7 +73,7 @@ async def _build_scheduler_for_test(
 
     if skip_network:
         tag_id = 0
-        log.info("DOCTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
+        log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
     else:
         # Ensure docktarr tag exists
         tag_id = await prowlarr.ensure_tag("docktarr")
@@ -132,7 +132,7 @@ async def _build_scheduler_for_test(
     if config.qbit_url and config.qbit_username and config.qbit_password:
         qbit = QBitClient(config.qbit_url, config.qbit_username, config.qbit_password)
         if skip_network:
-            log.info("DOCTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
+            log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
         else:
             await qbit.login()
             log.info("qBittorrent connected at %s", config.qbit_url)
@@ -368,7 +368,7 @@ async def _build_scheduler_for_test(
     if config.yaml.media_container_audit and config.yaml.media_container_audit.enabled:
         audit_docker: dict[str, DockerManager] = {}
         audit_ssh: dict[str, SSHClient] = {}
-        local_host = os.environ.get("DOCTARR_HOST_NAME", "zion")
+        local_host = os.environ.get("DOCKTARR_HOST_NAME", "zion")
         for spec in config.yaml.media_container_audit.containers:
             # Reuse SSH client from hw_capability if same host
             if spec.host not in audit_ssh and spec.host in hw_clients:
@@ -498,7 +498,7 @@ async def main() -> None:
 
     log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
 
-    # Build scheduler and all components (skips network if DOCTARR_SKIP_NETWORK_INIT=1)
+    # Build scheduler and all components (skips network if DOCKTARR_SKIP_NETWORK_INIT=1)
     (
         scheduler,
         health_state,
