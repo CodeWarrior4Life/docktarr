@@ -1,7 +1,7 @@
 # Example: add to your existing *arr docker-compose stack
 services:
   docktarr:
-    image: ghcr.io/codewarrior4life/docktarr:0.4.0
+    image: ghcr.io/codewarrior4life/docktarr:latest
     container_name: docktarr
     restart: unless-stopped
     ports:
