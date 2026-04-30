@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 — 2026-04-30
+
+### Renamed
+- Project renamed from `doctarr` to `docktarr`. The pun was always there.
+- Python package: `doctarr` → `docktarr`
+- Docker image: `ghcr.io/codewarrior4life/doctarr` → `ghcr.io/codewarrior4life/docktarr`
+- GitHub repo: `CodeWarrior4Life/doctarr` → `CodeWarrior4Life/docktarr`
+- Default config path: `/config/doctarr.yaml` → `/config/docktarr.yaml`
+
+### Migration
+- Anyone importing `doctarr` must update imports to `docktarr`.
+- Anyone running the old image must point at `ghcr.io/codewarrior4life/docktarr:latest` or pin to `doctarr:0.4.1` (the last release under the old name).
+- Anyone with a clone needs `git remote set-url origin git@github.com:CodeWarrior4Life/docktarr.git` (GitHub redirects but updating origin is cleaner).
+
+### No behavior changes
+- Pure rename. `0.4.1 → 0.5.0` reflects the breaking nature of the package name change. No code paths, no defaults, no scheduling, no module behavior changed.
+
 ## 0.4.1 (2026-04-21)
 
 ### imposter_detector — new heuristic + backfill mode
