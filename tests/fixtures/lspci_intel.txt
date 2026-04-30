@@ -1,0 +1,1 @@
+00:02.0 VGA compatible controller [0300]: Intel Corporation CoffeeLake-S GT2 [UHD Graphics 630] [8086:3e92] (rev 02)

@@ -73,3 +73,12 @@ class TestStateStore:
         store.set(IndexerState.new_candidate("1337x", prowlarr_id=1))
         items = store.all()
         assert len(items) == 1
+
+    def test_set_and_get_hw_report(self, tmp_path):
+        from pathlib import Path
+
+        path = tmp_path / "state.json"
+        s = StateStore(path=Path(path))
+        assert s.hw_report is None
+        s.set_hw_report({"zion": [{"kind": "quicksync"}]})
+        assert s.hw_report == {"zion": [{"kind": "quicksync"}]}

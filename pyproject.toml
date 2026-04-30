@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doctarr"
-version = "0.3.0"
+version = "0.4.1"
 description = "Autonomous indexer manager for Prowlarr"
 readme = "README.md"
 license = "MIT"
@@ -12,6 +12,10 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
     "apscheduler>=3.10,<4",
+    "PyYAML>=6.0",
+    "asyncssh>=2.14",
+    "docker>=7.0",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]

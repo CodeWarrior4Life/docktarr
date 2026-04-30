@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,13 +11,19 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from doctarr.arrclient import ArrClient
-from doctarr.config import Config
+from doctarr.config import Config, parse_duration
 from doctarr.discovery import run_discovery
+from doctarr.docker_manager import DockerManager
+from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
+from doctarr.http_health import HealthServer, HealthState
+from doctarr.media_container_audit import run_media_container_audit
 from doctarr.notifier import Notifier
+from doctarr.permissions_health import run_permissions_health
 from doctarr.prowlarr import ProwlarrClient
 from doctarr.pruner import run_pruner
 from doctarr.qbittorrent import QBitClient
-from doctarr.imposter_detector import run_imposter_detector
+from doctarr.imposter_detector import run_imposter_backfill, run_imposter_detector
+from doctarr.ssh_client import SSHClient, resolve_ssh_ref
 from doctarr.stall_detector import run_stall_detector
 from doctarr.state import IndexerState, IndexerStatus, StateStore
 from doctarr.tester import run_tester
@@ -24,16 +31,35 @@ from doctarr.tester import run_tester
 log = logging.getLogger("doctarr")
 
 
-async def main() -> None:
-    config = Config.from_env()
+async def _build_scheduler_for_test(
+    yaml_path: "Path | str | None" = None,
+) -> tuple:
+    """Build scheduler + health_state WITHOUT starting the scheduler or health server.
 
-    logging.basicConfig(
-        level=getattr(logging, config.log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    Used by integration tests to verify wire-up without hitting real network resources.
+    When DOCTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
+    (prowlarr.ensure_tag, _reconcile, qbit.login).
+
+    Returns (scheduler, health_state, http, qbit, arr_clients, hw_clients, ph_ssh,
+             plex_client, vpn_http) — callers are responsible for cleanup.
+    """
+    skip_network = os.environ.get("DOCTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
 
-    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+    if yaml_path is not None:
+        config = Config.from_env_and_yaml(yaml_path)
+    else:
+        config = Config.from_env_and_yaml()
+
+    health_state = HealthState()
+
+    # Declared so shutdown block can unconditionally reference them
+    ph_ssh: dict[str, SSHClient] = {}
+    plex_client = None
+    vpn_http: httpx.AsyncClient | None = None
 
     http = httpx.AsyncClient(base_url=config.prowlarr_url, timeout=30.0)
     prowlarr = ProwlarrClient(http, api_key=config.prowlarr_api_key)
@@ -45,12 +71,15 @@ async def main() -> None:
         enabled_events=config.webhook_events,
     )
 
-    # Ensure doctarr tag exists
-    tag_id = await prowlarr.ensure_tag("doctarr")
-    log.info("Using Prowlarr tag 'doctarr' (id=%d)", tag_id)
-
-    # Reconcile state with Prowlarr on startup
-    await _reconcile(prowlarr, state, tag_id)
+    if skip_network:
+        tag_id = 0
+        log.info("DOCTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
+    else:
+        # Ensure doctarr tag exists
+        tag_id = await prowlarr.ensure_tag("doctarr")
+        log.info("Using Prowlarr tag 'doctarr' (id=%d)", tag_id)
+        # Reconcile state with Prowlarr on startup
+        await _reconcile(prowlarr, state, tag_id)
 
     delay_secs = config.test_delay.total_seconds()
 
@@ -102,8 +131,11 @@ async def main() -> None:
 
     if config.qbit_url and config.qbit_username and config.qbit_password:
         qbit = QBitClient(config.qbit_url, config.qbit_username, config.qbit_password)
-        await qbit.login()
-        log.info("qBittorrent connected at %s", config.qbit_url)
+        if skip_network:
+            log.info("DOCTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
+        else:
+            await qbit.login()
+            log.info("qBittorrent connected at %s", config.qbit_url)
 
         for app_config in config.arr_apps:
             arr_clients[app_config.name] = ArrClient(app_config)
@@ -155,6 +187,146 @@ async def main() -> None:
             config.imposter_interval,
         )
 
+        if config.imposter_backfill_enabled:
+            scheduler.add_job(
+                run_imposter_backfill,
+                "interval",
+                seconds=config.imposter_backfill_interval.total_seconds(),
+                id="imposter_backfill",
+                kwargs={
+                    "arr_clients": arr_clients,
+                    "notifier": notifier,
+                    "tolerance": config.imposter_tolerance,
+                },
+            )
+            log.info(
+                "Imposter backfill enabled (interval=%s)",
+                config.imposter_backfill_interval,
+            )
+
+    # --- qbit_health (ported from arr-orchestrator, T13) ---
+    docker_mgr: DockerManager | None = None
+    if config.qbit_url and config.qbit_username and config.qbit_password and qbit:
+        from doctarr.qbit_health import run_qbit_health, QbitHealthConfig
+
+        qbit_container = os.environ.get("QBITTORRENT_CONTAINER", "qbittorrent").strip()
+        qbit_health_cfg = QbitHealthConfig(
+            container_name=qbit_container,
+            protected_categories=config.protected_categories,
+        )
+        docker_mgr = DockerManager()
+
+        async def _qbit_health_job():
+            await run_qbit_health(qbit, docker_mgr, notifier, qbit_health_cfg)
+
+        _qbit_health_interval = os.environ.get("QBIT_HEALTH_INTERVAL", "5m")
+        scheduler.add_job(
+            _qbit_health_job,
+            "interval",
+            seconds=parse_duration(_qbit_health_interval).total_seconds(),
+            id="qbit_health",
+        )
+        log.info(
+            "qbit_health enabled (container=%s, interval=%s)",
+            qbit_container,
+            _qbit_health_interval,
+        )
+
+    # --- vpn_health (ported from arr-orchestrator, T14) ---
+    _vpn_healthcheck_url = os.environ.get("VPN_HEALTHCHECK_URL", "").strip()
+    if _vpn_healthcheck_url:
+        from doctarr.vpn_health import run_vpn_health, VpnHealthConfig
+
+        _vpn_container = os.environ.get("VPN_CONTAINER", "gluetun").strip()
+        _vpn_regions_raw = os.environ.get(
+            "VPN_ALLOWED_REGIONS", "CA Toronto,CA Montreal,CA Vancouver"
+        ).strip()
+        _vpn_allowed_regions = [
+            r.strip() for r in _vpn_regions_raw.split(",") if r.strip()
+        ]
+        _vpn_require_pf = os.environ.get(
+            "VPN_REQUIRE_PORT_FORWARDING", "true"
+        ).strip().lower() not in ("0", "false", "no")
+        vpn_health_cfg = VpnHealthConfig(
+            container_name=_vpn_container,
+            healthcheck_url=_vpn_healthcheck_url,
+            allowed_regions=_vpn_allowed_regions,
+            require_port_forwarding=_vpn_require_pf,
+        )
+        if docker_mgr is None:
+            docker_mgr = DockerManager()
+        vpn_http = httpx.AsyncClient(timeout=10.0)
+
+        async def _vpn_health_job():
+            await run_vpn_health(vpn_http, docker_mgr, notifier, vpn_health_cfg)
+
+        _vpn_health_interval = os.environ.get("VPN_HEALTH_INTERVAL", "2m")
+        scheduler.add_job(
+            _vpn_health_job,
+            "interval",
+            seconds=parse_duration(_vpn_health_interval).total_seconds(),
+            id="vpn_health",
+        )
+        log.info(
+            "vpn_health enabled (container=%s, url=%s, interval=%s)",
+            _vpn_container,
+            _vpn_healthcheck_url,
+            _vpn_health_interval,
+        )
+
+    # --- disk_health (ported from arr-orchestrator, T15) ---
+    _disk_paths_raw = os.environ.get("DISK_HEALTH_PATHS", "").strip()
+    if _disk_paths_raw:
+        from doctarr.disk_health import run_disk_health, DiskPath
+
+        _disk_warning_pct = float(os.environ.get("DISK_WARNING_PCT", "85.0"))
+        _disk_critical_pct = float(os.environ.get("DISK_CRITICAL_PCT", "95.0"))
+        _disk_paths = [
+            DiskPath(
+                path=p.strip(),
+                warning_pct=_disk_warning_pct,
+                critical_pct=_disk_critical_pct,
+            )
+            for p in _disk_paths_raw.split(",")
+            if p.strip()
+        ]
+
+        async def _disk_health_job():
+            await run_disk_health(_disk_paths, notifier)
+
+        _disk_health_interval = os.environ.get("DISK_HEALTH_INTERVAL", "10m")
+        scheduler.add_job(
+            _disk_health_job,
+            "interval",
+            seconds=parse_duration(_disk_health_interval).total_seconds(),
+            id="disk_health",
+        )
+        log.info(
+            "disk_health enabled (paths=%s, interval=%s)",
+            _disk_paths_raw,
+            _disk_health_interval,
+        )
+
+    # --- arr_services (ported from arr-orchestrator, T15) ---
+    if arr_clients:
+        from doctarr.arr_services import run_arr_services
+
+        async def _arr_services_job():
+            await run_arr_services(arr_clients, notifier)
+
+        _arr_services_interval = os.environ.get("ARR_SERVICES_INTERVAL", "5m")
+        scheduler.add_job(
+            _arr_services_job,
+            "interval",
+            seconds=parse_duration(_arr_services_interval).total_seconds(),
+            id="arr_services",
+        )
+        log.info(
+            "arr_services enabled (apps=%s, interval=%s)",
+            list(arr_clients.keys()),
+            _arr_services_interval,
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(
@@ -165,6 +337,182 @@ async def main() -> None:
         id="digest",
         kwargs={"state": state, "notifier": notifier},
     )
+
+    # --- HW capability (v0.4) ---
+    hw_clients: dict[str, SSHClient] = {}
+    if config.yaml.hw_capability and config.yaml.hw_capability.enabled:
+        for host_ref in config.yaml.hw_capability.hosts:
+            if host_ref.ssh_ref:
+                ref = resolve_ssh_ref(host_ref.ssh_ref, host=host_ref.name)
+                hw_clients[host_ref.name] = SSHClient(ref)
+
+        scheduler.add_job(
+            _hw_capability_job,
+            "cron",
+            **_parse_cron(config.yaml.hw_capability.schedule),
+            id="hw_capability",
+            kwargs={
+                "hosts": hw_clients,
+                "state": state,
+                "notifier": notifier,
+                "health_state": health_state,
+            },
+        )
+        log.info(
+            "HW capability detector enabled (schedule=%s, hosts=%d)",
+            config.yaml.hw_capability.schedule,
+            len(hw_clients),
+        )
+
+    # --- media_container_audit (v0.4) ---
+    if config.yaml.media_container_audit and config.yaml.media_container_audit.enabled:
+        audit_docker: dict[str, DockerManager] = {}
+        audit_ssh: dict[str, SSHClient] = {}
+        local_host = os.environ.get("DOCTARR_HOST_NAME", "zion")
+        for spec in config.yaml.media_container_audit.containers:
+            # Reuse SSH client from hw_capability if same host
+            if spec.host not in audit_ssh and spec.host in hw_clients:
+                audit_ssh[spec.host] = hw_clients[spec.host]
+            elif spec.host not in audit_ssh:
+                # Look up ssh_ref from yaml hosts
+                host_ref = next(
+                    (
+                        h
+                        for h in (
+                            config.yaml.hw_capability.hosts
+                            if config.yaml.hw_capability
+                            else []
+                        )
+                        if h.name == spec.host
+                    ),
+                    None,
+                )
+                if host_ref and host_ref.ssh_ref:
+                    ref = resolve_ssh_ref(host_ref.ssh_ref, host=host_ref.name)
+                    audit_ssh[spec.host] = SSHClient(ref)
+            # DockerManager for local host only (Phase 1 limitation)
+            if spec.host == local_host and spec.host not in audit_docker:
+                audit_docker[spec.host] = DockerManager()
+
+        async def _audit_job():
+            # Pull hw_report from state if available, else empty
+            hw_report = getattr(state, "hw_report", None)
+            if hw_report is None:
+                hw_report = HWCapabilityReport()
+            findings = await run_media_container_audit(
+                containers=config.yaml.media_container_audit.containers,
+                docker_managers=audit_docker,
+                ssh_clients=audit_ssh,
+                hw_report=hw_report,
+                notifier=notifier,
+            )
+            health_state.record_audit_findings(
+                [
+                    {
+                        "container": f.container,
+                        "host": f.host,
+                        "status": f.status.value,
+                        "reason": f.reason,
+                        "hint": f.remediation_hint,
+                    }
+                    for f in findings
+                ]
+            )
+
+        scheduler.add_job(
+            _audit_job,
+            "cron",
+            **_parse_cron(config.yaml.media_container_audit.schedule),
+            id="media_container_audit",
+        )
+        log.info(
+            "media_container_audit enabled (schedule=%s, containers=%d)",
+            config.yaml.media_container_audit.schedule,
+            len(config.yaml.media_container_audit.containers),
+        )
+
+    # --- permissions_health (v0.4) ---
+    if config.yaml.permission_health and config.yaml.permission_health.enabled:
+        ph = config.yaml.permission_health
+        if ph.fix_host and ph.fix_credential_ref:
+            ref = resolve_ssh_ref(ph.fix_credential_ref, host=ph.fix_host)
+            ph_ssh[ph.fix_host] = SSHClient(ref)
+
+        # Optional Plex client for refresh trigger
+        plex_url = os.environ.get("PLEX_URL", "").strip()
+        plex_token = os.environ.get("PLEX_TOKEN", "").strip()
+        if plex_url and plex_token:
+            from doctarr.plex_api import PlexClient
+
+            plex_client = PlexClient(plex_url, plex_token)
+
+        async def _perms_job():
+            reports = await run_permissions_health(ph, ph_ssh, plex_client, notifier)
+            health_state.record_permission_findings(
+                [
+                    {
+                        "path": r.path_config.name,
+                        "total": r.total_files,
+                        "drift": len(r.findings),
+                        "status": r.status,
+                    }
+                    for r in reports
+                ]
+            )
+
+        scheduler.add_job(
+            _perms_job,
+            "cron",
+            **_parse_cron(ph.schedule),
+            id="permissions_health",
+        )
+        log.info(
+            "permissions_health enabled (schedule=%s, paths=%d, fix_host=%s)",
+            ph.schedule,
+            len(ph.paths),
+            ph.fix_host,
+        )
+
+    return (
+        scheduler,
+        health_state,
+        http,
+        qbit,
+        arr_clients,
+        hw_clients,
+        ph_ssh,
+        plex_client,
+        vpn_http,
+    )
+
+
+async def main() -> None:
+    # Parse config first so log level is applied before the helper runs
+    config = Config.from_env_and_yaml()
+
+    logging.basicConfig(
+        level=getattr(logging, config.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+
+    # Build scheduler and all components (skips network if DOCTARR_SKIP_NETWORK_INIT=1)
+    (
+        scheduler,
+        health_state,
+        http,
+        qbit,
+        arr_clients,
+        hw_clients,
+        ph_ssh,
+        plex_client,
+        vpn_http,
+    ) = await _build_scheduler_for_test()
+
+    health_server = HealthServer(state=health_state)
+    await health_server.start()
 
     scheduler.start()
     log.info(
@@ -192,11 +540,20 @@ async def main() -> None:
     await stop_event.wait()
 
     scheduler.shutdown(wait=False)
+    await health_server.stop()
     await http.aclose()
     if qbit:
         await qbit.close()
     for client in arr_clients.values():
         await client.close()
+    for client in hw_clients.values():
+        await client.close()
+    for client in ph_ssh.values():
+        await client.close()
+    if plex_client is not None:
+        await plex_client.close()
+    if vpn_http is not None:
+        await vpn_http.aclose()
     log.info("Doctarr stopped")
 
 
@@ -242,3 +599,46 @@ async def _send_digest(state: StateStore, notifier: Notifier) -> None:
             "pruned_24h": 0,
         },
     )
+
+
+def _parse_cron(expr: str) -> dict:
+    """Parse '0 3 * * *' -> kwargs for AsyncIOScheduler.add_job('cron', ...)."""
+    parts = expr.split()
+    if len(parts) != 5:
+        raise ValueError(f"Invalid cron: {expr!r}")
+    return dict(
+        minute=parts[0],
+        hour=parts[1],
+        day=parts[2],
+        month=parts[3],
+        day_of_week=parts[4],
+    )
+
+
+async def _hw_capability_job(hosts, state, notifier, health_state: HealthState):
+    report = await run_hw_capability(hosts)
+    # Store report on state for consumption by /health endpoint + media_container_audit (T9, T16)
+    if hasattr(state, "set_hw_report"):
+        state.set_hw_report(report)
+    # Publish a serializable view into /health
+    health_state.record_hw(
+        {
+            host: [
+                {
+                    "kind": a.kind,
+                    "vendor": a.vendor,
+                    "model": a.model,
+                    "device_paths": list(a.device_paths),
+                    "codecs_decode": list(a.codecs_decode),
+                    "codecs_encode": list(a.codecs_encode),
+                    "hdr_tone_mapping": a.hdr_tone_mapping,
+                    "driver_version": a.driver_version,
+                }
+                for a in accs
+            ]
+            for host, accs in report.by_host.items()
+        }
+    )
+    for host, accelerators in report.by_host.items():
+        if not accelerators:
+            await notifier.emit("hw.none_detected", {"host": host})

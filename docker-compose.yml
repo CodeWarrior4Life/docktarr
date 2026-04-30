@@ -1,22 +1,52 @@
 # Example: add to your existing *arr docker-compose stack
 services:
   doctarr:
-    image: ghcr.io/codewarrior4life/doctarr:latest
+    image: ghcr.io/codewarrior4life/doctarr:0.4.0
     container_name: doctarr
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       - PROWLARR_URL=http://prowlarr:9696
-      - PROWLARR_API_KEY=your-api-key-here
-      # Optional (defaults shown):
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - TZ=America/New_York
+      # SSH refs (resolved by ssh_client.resolve_ssh_ref)
+      - ZION_SUDO_USER=admin
+      - ZION_SUDO_PASSWORD=${ZION_SUDO_PASSWORD}
+      - MEGACITY_SUDO_USER=SuperUser
+      - MEGACITY_SUDO_PASSWORD=${MEGACITY_SUDO_PASSWORD}
+      # Orchestrator-parity jobs (optional)
+      - QBITTORRENT_URL=${QBITTORRENT_URL:-}
+      - QBITTORRENT_USERNAME=${QBITTORRENT_USERNAME:-}
+      - QBITTORRENT_PASSWORD=${QBITTORRENT_PASSWORD:-}
+      - QBITTORRENT_CONTAINER=${QBITTORRENT_CONTAINER:-qbittorrent}
+      - VPN_HEALTHCHECK_URL=${VPN_HEALTHCHECK_URL:-}
+      - DISK_HEALTH_PATHS=${DISK_HEALTH_PATHS:-}
+      # Plex refresh hook (optional)
+      - PLEX_URL=${PLEX_URL:-}
+      - PLEX_TOKEN=${PLEX_TOKEN:-}
+      # Scheduler tuning (optional — defaults shown)
       # - DISCOVERY_INTERVAL=6h
       # - TEST_INTERVAL=2h
       # - PRUNE_INTERVAL=1h
       # - PRUNE_THRESHOLD=12h
       # - TEST_DELAY=2s
+      # - QBIT_HEALTH_INTERVAL=5m
+      # - VPN_HEALTH_INTERVAL=5m
+      # - DISK_HEALTH_INTERVAL=15m
+      # - ARR_SERVICES_INTERVAL=5m
+      # - HW_CAPABILITY_INTERVAL=24h
+      # - MEDIA_AUDIT_INTERVAL=12h
+      # - PERMS_HEALTH_INTERVAL=6h
+      # Notifications (optional)
       # - WEBHOOK_URL=https://discord.com/api/webhooks/your/webhook
       # - WEBHOOK_EVENTS=added,pruned,digest
       # - DIGEST_TIME=08:00
       # - LOG_LEVEL=info
-      - TZ=America/New_York
+      # Host identity (optional)
+      # - DOCTARR_HOST_NAME=morpheus
+      # - DOCTARR_SKIP_NETWORK_INIT=false
     volumes:
       - ./config/doctarr:/config
-    restart: unless-stopped
+      - ./config/doctarr.yaml:/config/doctarr.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # for local DockerManager

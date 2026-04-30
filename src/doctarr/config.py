@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
+
+from doctarr.yaml_config import YamlConfig, load_yaml_config
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([smhd]?)$", re.IGNORECASE)
 
@@ -68,6 +72,10 @@ class Config:
     imposter_interval: timedelta
     imposter_tolerance: float
     imposter_lookback: timedelta
+    imposter_backfill_enabled: bool
+    imposter_backfill_interval: timedelta
+    # v0.4: YAML-driven config
+    yaml: YamlConfig = field(default_factory=YamlConfig)
 
     @classmethod
     def from_env(cls) -> Config:
@@ -124,4 +132,21 @@ class Config:
             imposter_lookback=parse_duration(
                 os.environ.get("IMPOSTER_LOOKBACK", "24h")
             ),
+            imposter_backfill_enabled=os.environ.get(
+                "IMPOSTER_BACKFILL_ENABLED", "true"
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "no"),
+            imposter_backfill_interval=parse_duration(
+                os.environ.get("IMPOSTER_BACKFILL_INTERVAL", "7d")
+            ),
         )
+
+    @classmethod
+    def from_env_and_yaml(
+        cls, yaml_path: Path | str = "/config/doctarr.yaml"
+    ) -> Config:
+        base = cls.from_env()
+        yaml_cfg = load_yaml_config(yaml_path)
+        return dataclasses.replace(base, yaml=yaml_cfg)
