@@ -16,7 +16,7 @@ Deviations from orchestrator
   Doctarr supports a list of ``DiskPath`` objects, one per monitored path.
   This is a deliberate generalisation (the orchestrator was single-disk).
 - Orchestrator had a ``< 80%`` digest-only tier.  Doctarr drops the digest
-  concept (no DailyDigest equivalent in doctarr).  The 80% soft-tier is
+  concept (no DailyDigest equivalent in docktarr).  The 80% soft-tier is
   omitted intentionally — the notifier's webhook_events list gates delivery,
   so operators who want verbose disk status can subscribe to all events.
 - Orchestrator embedded MAM-specific cleanup suggestions in the critical
@@ -35,7 +35,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
-from doctarr.notifier import Notifier
+from docktarr.notifier import Notifier
 
 log = logging.getLogger(__name__)
 

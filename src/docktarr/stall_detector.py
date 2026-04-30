@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from doctarr.arrclient import ArrClient, CATEGORY_MAP
-from doctarr.config import ArrAppConfig
-from doctarr.notifier import Notifier
-from doctarr.qbittorrent import QBitClient
+from docktarr.arrclient import ArrClient, CATEGORY_MAP
+from docktarr.config import ArrAppConfig
+from docktarr.notifier import Notifier
+from docktarr.qbittorrent import QBitClient
 
 log = logging.getLogger(__name__)
 

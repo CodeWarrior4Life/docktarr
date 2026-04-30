@@ -2,7 +2,7 @@ import json
 
 import httpx
 import pytest
-from doctarr.notifier import Notifier
+from docktarr.notifier import Notifier
 
 
 class TestNotifier:
@@ -83,7 +83,7 @@ def test_new_event_types_are_allowed():
     # If notifier uses KNOWN_EVENTS set → check membership.
     # If notifier uses templates dict → check keys.
     # If notifier is fully permissive → at minimum the templates registry should have entries.
-    from doctarr import notifier as n
+    from docktarr import notifier as n
 
     required = {
         "hw.none_detected",

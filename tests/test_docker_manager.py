@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from doctarr.docker_manager import DockerManager, ContainerInfo
+from docktarr.docker_manager import DockerManager, ContainerInfo
 
 
 class FakeContainer:

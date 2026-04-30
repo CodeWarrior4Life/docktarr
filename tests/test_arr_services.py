@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from doctarr.arr_services import run_arr_services
-from doctarr.arrclient import ArrClient
-from doctarr.config import ArrAppConfig
-from doctarr.notifier import Notifier
+from docktarr.arr_services import run_arr_services
+from docktarr.arrclient import ArrClient
+from docktarr.config import ArrAppConfig
+from docktarr.notifier import Notifier
 
 
 # ---------------------------------------------------------------------------

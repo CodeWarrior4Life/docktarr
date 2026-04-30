@@ -1,6 +1,6 @@
 import os
 import pytest
-from doctarr.ssh_client import SSHRef, SSHClient, resolve_ssh_ref
+from docktarr.ssh_client import SSHRef, SSHClient, resolve_ssh_ref
 
 
 def test_resolve_ssh_ref_reads_env(monkeypatch):
@@ -27,7 +27,7 @@ def test_resolve_ssh_ref_raises_when_password_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ssh_client_run_with_fake():
-    from doctarr.ssh_client import _FakeSSHConnection
+    from docktarr.ssh_client import _FakeSSHConnection
 
     client = SSHClient(
         ref=SSHRef(host="zion", username="x", password="y"),
@@ -40,7 +40,7 @@ async def test_ssh_client_run_with_fake():
 
 @pytest.mark.asyncio
 async def test_ssh_client_sudo_wraps_command():
-    from doctarr.ssh_client import _FakeSSHConnection
+    from docktarr.ssh_client import _FakeSSHConnection
 
     captured = []
     client = SSHClient(

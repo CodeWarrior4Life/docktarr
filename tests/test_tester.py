@@ -3,10 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.state import IndexerState, IndexerStatus, StateStore
-from doctarr.tester import run_tester
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.state import IndexerState, IndexerStatus, StateStore
+from docktarr.tester import run_tester
 
 
 class TestTester:

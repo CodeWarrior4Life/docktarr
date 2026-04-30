@@ -42,9 +42,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from doctarr.docker_manager import DockerManager
-from doctarr.notifier import Notifier
-from doctarr.qbittorrent import QBitClient
+from docktarr.docker_manager import DockerManager
+from docktarr.notifier import Notifier
+from docktarr.qbittorrent import QBitClient
 
 log = logging.getLogger(__name__)
 

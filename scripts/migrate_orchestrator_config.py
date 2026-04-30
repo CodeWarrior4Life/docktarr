@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""Deterministic orchestrator.yaml -> (doctarr.yaml, .env) translator.
+"""Deterministic orchestrator.yaml -> (docktarr.yaml, .env) translator.
 
 Secrets (passwords, API keys, usernames) are extracted to .env; structural
-config goes to doctarr.yaml.  Run after upgrading to doctarr 0.4.0.
+config goes to docktarr.yaml.  Run after upgrading to docktarr 0.4.0.
 
 Usage:
     python scripts/migrate_orchestrator_config.py <orchestrator.yaml> <output_dir>
 
 Output:
-    <output_dir>/doctarr.yaml  -- structural config (no secrets)
+    <output_dir>/docktarr.yaml  -- structural config (no secrets)
     <output_dir>/.env          -- secrets + connection env vars
 
 Design notes:
@@ -16,7 +16,7 @@ Design notes:
       the env-var *name* is preserved so existing secrets don't need to move.
     - Inline secrets (password: literal) are extracted to .env directly.
     - services block is normalised to APPNAME_URL + APPNAME_API_KEY env vars.
-    - Unknown top-level keys are passed through to doctarr.yaml under an
+    - Unknown top-level keys are passed through to docktarr.yaml under an
       'unknown_sections' key so nothing is silently dropped.
     - Idempotent: running twice on the same input produces identical output.
 """
@@ -56,7 +56,7 @@ def migrate(
     orchestrator_yaml: "Path | str",
     output_dir: "Path | str",
 ) -> tuple[Path, Path]:
-    """Translate *orchestrator_yaml* to doctarr.yaml + .env in *output_dir*.
+    """Translate *orchestrator_yaml* to docktarr.yaml + .env in *output_dir*.
 
     Returns ``(doctarr_yaml_path, env_file_path)``.  Safe to call repeatedly;
     last call wins (files are overwritten, not appended).
@@ -100,7 +100,7 @@ def migrate(
         yaml_payload["unknown_sections"] = unknown
 
     # -- write outputs -----------------------------------------------------
-    yaml_out = out / "doctarr.yaml"
+    yaml_out = out / "docktarr.yaml"
     env_out = out / ".env"
 
     if yaml_payload:
@@ -159,8 +159,8 @@ def _process_services(services: dict, env_lines: list[str], yaml_payload: dict) 
         # api_key_env: forward the env-var name so the actual key stays put
         if api_key_env := cfg.get("api_key_env"):
             env_lines.append(f"{upper}_API_KEY_ENV={api_key_env}")
-            # Also emit the resolved name so doctarr Config.from_env picks it up
-            env_lines.append(f"# doctarr reads: {api_key_env}")
+            # Also emit the resolved name so docktarr Config.from_env picks it up
+            env_lines.append(f"# docktarr reads: {api_key_env}")
 
         # Structural fields (api_version, etc.) survive in yaml
         structural = {

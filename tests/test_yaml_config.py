@@ -1,7 +1,7 @@
 from pathlib import Path
 import textwrap
 import pytest
-from doctarr.yaml_config import load_yaml_config, YamlConfig
+from docktarr.yaml_config import load_yaml_config, YamlConfig
 
 
 def test_returns_empty_when_file_missing(tmp_path):
@@ -10,7 +10,7 @@ def test_returns_empty_when_file_missing(tmp_path):
 
 
 def test_parses_hw_capability_section(tmp_path):
-    p = tmp_path / "doctarr.yaml"
+    p = tmp_path / "docktarr.yaml"
     p.write_text(
         textwrap.dedent("""
         hw_capability:
@@ -31,7 +31,7 @@ def test_parses_hw_capability_section(tmp_path):
 
 
 def test_parses_media_container_audit_section(tmp_path):
-    p = tmp_path / "doctarr.yaml"
+    p = tmp_path / "docktarr.yaml"
     p.write_text(
         textwrap.dedent("""
         media_container_audit:
@@ -58,7 +58,7 @@ def test_parses_media_container_audit_section(tmp_path):
 
 
 def test_parses_permission_health_section(tmp_path):
-    p = tmp_path / "doctarr.yaml"
+    p = tmp_path / "docktarr.yaml"
     p.write_text(
         textwrap.dedent("""
         permission_health:

@@ -1,12 +1,12 @@
 import pytest
-from doctarr.media_container_audit import (
+from docktarr.media_container_audit import (
     audit_plex_container,
     AuditStatus,
     AuditFinding,
 )
-from doctarr.docker_manager import ContainerInfo
-from doctarr.yaml_config import MediaContainer
-from doctarr.hw_capability import HWAccelerator
+from docktarr.docker_manager import ContainerInfo
+from docktarr.yaml_config import MediaContainer
+from docktarr.hw_capability import HWAccelerator
 
 
 PLEX_CONTAINER = MediaContainer(

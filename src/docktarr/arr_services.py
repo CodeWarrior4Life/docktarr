@@ -41,8 +41,8 @@ from typing import Any
 
 import httpx
 
-from doctarr.arrclient import ArrClient
-from doctarr.notifier import Notifier
+from docktarr.arrclient import ArrClient
+from docktarr.notifier import Notifier
 
 log = logging.getLogger(__name__)
 

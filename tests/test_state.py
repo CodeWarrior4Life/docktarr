@@ -1,4 +1,4 @@
-from doctarr.state import IndexerStatus, IndexerState, StateStore
+from docktarr.state import IndexerStatus, IndexerState, StateStore
 
 
 class TestIndexerState:

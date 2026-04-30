@@ -2,10 +2,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.pruner import run_pruner
-from doctarr.state import IndexerState, IndexerStatus, StateStore
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.pruner import run_pruner
+from docktarr.state import IndexerState, IndexerStatus, StateStore
 
 
 class TestPruner:

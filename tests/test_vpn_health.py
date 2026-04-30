@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from doctarr.docker_manager import ContainerInfo
-from doctarr.notifier import Notifier
-from doctarr.vpn_health import VpnHealthConfig, run_vpn_health
+from docktarr.docker_manager import ContainerInfo
+from docktarr.notifier import Notifier
+from docktarr.vpn_health import VpnHealthConfig, run_vpn_health
 
 
 # ---------------------------------------------------------------------------

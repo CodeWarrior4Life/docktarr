@@ -2,8 +2,8 @@ import json
 
 import httpx
 import pytest
-from doctarr.arrclient import ArrClient
-from doctarr.config import ArrAppConfig
+from docktarr.arrclient import ArrClient
+from docktarr.config import ArrAppConfig
 
 
 class TestArrClient:

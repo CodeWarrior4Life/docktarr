@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.state import IndexerStatus, StateStore
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.state import IndexerStatus, StateStore
 
 log = logging.getLogger(__name__)
 

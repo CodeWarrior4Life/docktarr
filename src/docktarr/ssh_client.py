@@ -9,7 +9,7 @@ from typing import Callable, Awaitable
 
 import asyncssh
 
-log = logging.getLogger("doctarr.ssh")
+log = logging.getLogger("docktarr.ssh")
 
 
 @dataclass(frozen=True)

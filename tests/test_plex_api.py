@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from doctarr.plex_api import PlexPreferences, parse_preferences_xml
+from docktarr.plex_api import PlexPreferences, parse_preferences_xml
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

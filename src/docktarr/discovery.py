@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient, is_public_indexer
-from doctarr.state import IndexerState, StateStore
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient, is_public_indexer
+from docktarr.state import IndexerState, StateStore
 
 log = logging.getLogger(__name__)
 

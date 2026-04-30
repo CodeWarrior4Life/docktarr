@@ -3,14 +3,14 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
-from doctarr.arrclient import ArrClient
-from doctarr.config import ArrAppConfig
-from doctarr.imposter_detector import (
+from docktarr.arrclient import ArrClient
+from docktarr.config import ArrAppConfig
+from docktarr.imposter_detector import (
     _parse_runtime_str,
     run_imposter_backfill,
     run_imposter_detector,
 )
-from doctarr.notifier import Notifier
+from docktarr.notifier import Notifier
 
 
 class TestParseRuntime:
