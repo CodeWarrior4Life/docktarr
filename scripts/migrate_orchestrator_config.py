@@ -58,7 +58,7 @@ def migrate(
 ) -> tuple[Path, Path]:
     """Translate *orchestrator_yaml* to docktarr.yaml + .env in *output_dir*.
 
-    Returns ``(doctarr_yaml_path, env_file_path)``.  Safe to call repeatedly;
+    Returns ``(docktarr_yaml_path, env_file_path)``.  Safe to call repeatedly;
     last call wins (files are overwritten, not appended).
     """
     src = Path(orchestrator_yaml)
