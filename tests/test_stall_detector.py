@@ -3,11 +3,11 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
-from doctarr.arrclient import ArrClient
-from doctarr.config import ArrAppConfig
-from doctarr.notifier import Notifier
-from doctarr.qbittorrent import QBitClient
-from doctarr.stall_detector import run_stall_detector
+from docktarr.arrclient import ArrClient
+from docktarr.config import ArrAppConfig
+from docktarr.notifier import Notifier
+from docktarr.qbittorrent import QBitClient
+from docktarr.stall_detector import run_stall_detector
 
 
 def _make_torrent(

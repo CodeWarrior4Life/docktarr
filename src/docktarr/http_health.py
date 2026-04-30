@@ -6,7 +6,7 @@ from typing import Any
 
 from aiohttp import web
 
-log = logging.getLogger("doctarr.health")
+log = logging.getLogger("docktarr.health")
 
 
 @dataclass

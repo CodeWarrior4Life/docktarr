@@ -1,5 +1,5 @@
 import asyncio
 
-from doctarr.main import main
+from docktarr.main import main
 
 asyncio.run(main())

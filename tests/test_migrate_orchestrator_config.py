@@ -30,7 +30,7 @@ disk:
     assert Path(out_yaml).exists()
     assert Path(out_env).exists()
     yaml_text = Path(out_yaml).read_text()
-    # The YAML should surface doctarr sections; orchestrator sections may be passed through as-is
+    # The YAML should surface docktarr sections; orchestrator sections may be passed through as-is
     # under an 'orchestrator' key or mapped to per-job sections. Either is acceptable if consistent.
     assert (
         "qbittorrent" in yaml_text.lower()

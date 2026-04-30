@@ -2,7 +2,7 @@ import json
 
 import httpx
 import pytest
-from doctarr.qbittorrent import QBitClient
+from docktarr.qbittorrent import QBitClient
 
 
 class TestQBitClient:

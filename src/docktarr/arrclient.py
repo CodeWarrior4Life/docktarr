@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from doctarr.config import ArrAppConfig
+from docktarr.config import ArrAppConfig
 
 log = logging.getLogger(__name__)
 

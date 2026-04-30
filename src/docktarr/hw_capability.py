@@ -5,9 +5,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-from doctarr.ssh_client import SSHClient
+from docktarr.ssh_client import SSHClient
 
-log = logging.getLogger("doctarr.hw")
+log = logging.getLogger("docktarr.hw")
 
 Kind = Literal["quicksync", "nvenc", "vcn", "videotoolbox", "none"]
 

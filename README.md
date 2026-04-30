@@ -1,10 +1,10 @@
-# Doctarr
+# Docktarr
 
 Autonomous indexer manager for [Prowlarr](https://prowlarr.com). Discovers, tests, and maintains public torrent indexers so you don't have to.
 
 ## What It Does
 
-Prowlarr ships with 200+ public torrent indexer definitions, but you have to manually add, test, and clean up each one. Doctarr automates the entire lifecycle:
+Prowlarr ships with 200+ public torrent indexer definitions, but you have to manually add, test, and clean up each one. Docktarr automates the entire lifecycle:
 
 1. **Discovers** all public indexers from Prowlarr's built-in catalog
 2. **Tests** each one to verify it's actually working
@@ -20,23 +20,23 @@ Zero configuration beyond your Prowlarr URL and API key. Set it and forget it.
 Add to your existing docker-compose stack:
 
 ```yaml
-doctarr:
-  image: ghcr.io/codewarrior4life/doctarr:latest
-  container_name: doctarr
+docktarr:
+  image: ghcr.io/codewarrior4life/docktarr:latest
+  container_name: docktarr
   environment:
     - PROWLARR_URL=http://prowlarr:9696
     - PROWLARR_API_KEY=your-api-key
     - TZ=America/New_York
   volumes:
-    - ./config/doctarr:/config
+    - ./config/docktarr:/config
   restart: unless-stopped
 ```
 
-That's it. Doctarr will start discovering and testing indexers immediately.
+That's it. Docktarr will start discovering and testing indexers immediately.
 
 ## How It Works
 
-Doctarr runs four independent jobs:
+Docktarr runs four independent jobs:
 
 | Job | Default Interval | What It Does |
 |-----|-----------------|--------------|
@@ -47,9 +47,9 @@ Doctarr runs four independent jobs:
 
 ### Safety
 
-- **Private trackers are never touched.** Doctarr only manages indexers it creates, identified by a `doctarr` tag in Prowlarr.
-- **User changes are respected.** Remove the tag and Doctarr stops managing that indexer.
-- **Graceful recovery.** If state is lost, Doctarr rebuilds from Prowlarr.
+- **Private trackers are never touched.** Docktarr only manages indexers it creates, identified by a `docktarr` tag in Prowlarr.
+- **User changes are respected.** Remove the tag and Docktarr stops managing that indexer.
+- **Graceful recovery.** If state is lost, Docktarr rebuilds from Prowlarr.
 
 ## Configuration
 
@@ -86,8 +86,8 @@ Doctarr runs four independent jobs:
 | `HW_CAPABILITY_INTERVAL` | No | `24h` | Hardware capability scan interval |
 | `MEDIA_AUDIT_INTERVAL` | No | `12h` | Media container audit interval |
 | `PERMS_HEALTH_INTERVAL` | No | `6h` | Permissions health scan interval |
-| `DOCTARR_HOST_NAME` | No | - | Override detected hostname for SSH routing |
-| `DOCTARR_SKIP_NETWORK_INIT` | No | `false` | Skip SSH connectivity check on startup |
+| `DOCKTARR_HOST_NAME` | No | - | Override detected hostname for SSH routing |
+| `DOCKTARR_SKIP_NETWORK_INIT` | No | `false` | Skip SSH connectivity check on startup |
 
 ## Webhook Events
 
@@ -101,9 +101,9 @@ Doctarr runs four independent jobs:
 
 ## Hardware Capability Detection
 
-Doctarr SSH-connects to each configured host and detects available hardware accelerators (Intel QuickSync, NVIDIA NVENC, AMD VCN). Results feed the media container audit.
+Docktarr SSH-connects to each configured host and detects available hardware accelerators (Intel QuickSync, NVIDIA NVENC, AMD VCN). Results feed the media container audit.
 
-Configure hosts in `doctarr.yaml`:
+Configure hosts in `docktarr.yaml`:
 
 ```yaml
 hosts:
@@ -145,14 +145,14 @@ Events emitted: `perms.drift_detected`, `perms.fix_applied`, `perms.fix_failed`.
 
 **Never point `paths:` at raw download directories** (e.g. `/data/Downloads`). ARR apps hardlink imported files — the library-side file and the download-side file share an inode. Chowning the library file changes the inode owner for both, which can prevent qBittorrent from reading the torrent data and stops seeding. On private trackers like MyAnonaMouse (MAM), losing seed time below ratio thresholds triggers account consequences.
 
-Doctarr enforces two safeguards automatically:
+Docktarr enforces two safeguards automatically:
 
 1. **Hardlink skip**: any file with `nlink > 1` (i.e. referenced from more than one path) is silently skipped during `auto_fix`. A `perms.skipped_hardlinks` webhook event fires with a count and sample paths so you can investigate.
-2. **Downloads-path warning**: if a configured path contains `downloads` or `mam` (case-insensitive), Doctarr logs a WARNING at scan time reminding you to set `auto_fix: false`.
+2. **Downloads-path warning**: if a configured path contains `downloads` or `mam` (case-insensitive), Docktarr logs a WARNING at scan time reminding you to set `auto_fix: false`.
 
 ## Consolidating arr-orchestrator
 
-Doctarr 0.4 folds the arr-orchestrator jobs into the same process. No separate deployment needed:
+Docktarr 0.4 folds the arr-orchestrator jobs into the same process. No separate deployment needed:
 
 | Job | Interval env var | What it checks |
 |-----|-----------------|----------------|
@@ -161,15 +161,15 @@ Doctarr 0.4 folds the arr-orchestrator jobs into the same process. No separate d
 | `disk_health` | `DISK_HEALTH_INTERVAL` | Free space on `DISK_HEALTH_PATHS` |
 | `arr_services` | `ARR_SERVICES_INTERVAL` | Liveness of configured *arr service URLs |
 
-All jobs are opt-in: set the relevant env vars and they activate. Leave them unset and Doctarr behaves exactly as 0.3.
+All jobs are opt-in: set the relevant env vars and they activate. Leave them unset and Docktarr behaves exactly as 0.3.
 
 A migration script for existing orchestrator configs is at `scripts/migrate_orchestrator_config.py`.
 
 ## Development
 
 ```bash
-git clone https://github.com/CodeWarrior4Life/doctarr.git
-cd doctarr
+git clone https://github.com/CodeWarrior4Life/docktarr.git
+cd docktarr
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 pytest -v

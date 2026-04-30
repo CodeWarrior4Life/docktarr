@@ -55,8 +55,8 @@ from typing import Any
 
 import httpx
 
-from doctarr.docker_manager import DockerManager
-from doctarr.notifier import Notifier
+from docktarr.docker_manager import DockerManager
+from docktarr.notifier import Notifier
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ async def run_vpn_health(
 
     # Docker container status values: "running", "exited", "paused",
     # "restarting", "dead", "created".  The orchestrator also checked a
-    # separate health field from its own DockerManager; doctarr's ContainerInfo
+    # separate health field from its own DockerManager; docktarr's ContainerInfo
     # only exposes ``status``.  We treat anything other than "running" as
     # requiring a restart (mirrors orchestrator: not running → restart).
     if info.status != "running":

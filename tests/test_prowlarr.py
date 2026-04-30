@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from doctarr.prowlarr import ProwlarrClient, is_public_indexer
+from docktarr.prowlarr import ProwlarrClient, is_public_indexer
 
 
 def make_schema_entry(
@@ -60,7 +60,7 @@ class TestProwlarrClient:
                 "enable": True,
             },
         ]
-        tags = [{"id": 5, "label": "doctarr"}]
+        tags = [{"id": 5, "label": "docktarr"}]
 
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
@@ -78,7 +78,7 @@ class TestProwlarrClient:
             if path == "/api/v1/tag" and method == "GET":
                 return httpx.Response(200, json=tags)
             if path == "/api/v1/tag" and method == "POST":
-                return httpx.Response(201, json={"id": 10, "label": "doctarr"})
+                return httpx.Response(201, json={"id": 10, "label": "docktarr"})
             return httpx.Response(404)
 
         transport = httpx.MockTransport(handler)
@@ -106,7 +106,7 @@ class TestProwlarrClient:
         assert result is True
 
     async def test_ensure_tag_existing(self, mock_client):
-        tag_id = await mock_client.ensure_tag("doctarr")
+        tag_id = await mock_client.ensure_tag("docktarr")
         assert tag_id == 5
 
     async def test_delete_indexer(self, mock_client):

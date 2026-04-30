@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from doctarr.disk_health import DiskPath, run_disk_health
-from doctarr.notifier import Notifier
+from docktarr.disk_health import DiskPath, run_disk_health
+from docktarr.notifier import Notifier
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ async def test_healthy_below_warning_no_events():
     notifier, events = _make_notifier()
 
     with patch(
-        "doctarr.disk_health.shutil.disk_usage",
+        "docktarr.disk_health.shutil.disk_usage",
         return_value=_fake_usage(total_gb=10, free_gb=5),
     ):
         results = await run_disk_health([dp], notifier)
@@ -75,7 +75,7 @@ async def test_warning_threshold_emits_disk_warning():
 
     # 90% used: total=10GB, free=1GB → used=9GB → 90%
     with patch(
-        "doctarr.disk_health.shutil.disk_usage",
+        "docktarr.disk_health.shutil.disk_usage",
         return_value=_fake_usage(total_gb=10, free_gb=1),
     ):
         results = await run_disk_health([dp], notifier)
@@ -95,7 +95,7 @@ async def test_critical_threshold_emits_disk_critical():
 
     # 96% used: total=100GB, free=4GB → used=96GB → 96%
     with patch(
-        "doctarr.disk_health.shutil.disk_usage",
+        "docktarr.disk_health.shutil.disk_usage",
         return_value=_fake_usage(total_gb=100, free_gb=4),
     ):
         results = await run_disk_health([dp], notifier)
@@ -114,7 +114,7 @@ async def test_oserror_returns_error_status_no_crash():
     notifier, events = _make_notifier()
 
     with patch(
-        "doctarr.disk_health.shutil.disk_usage", side_effect=OSError("No such file")
+        "docktarr.disk_health.shutil.disk_usage", side_effect=OSError("No such file")
     ):
         results = await run_disk_health([dp], notifier)
 
@@ -139,7 +139,7 @@ async def test_multiple_paths_independent():
             return _fake_usage(total_gb=10, free_gb=5)
         return _fake_usage(total_gb=100, free_gb=4)
 
-    with patch("doctarr.disk_health.shutil.disk_usage", side_effect=_fake):
+    with patch("docktarr.disk_health.shutil.disk_usage", side_effect=_fake):
         results = await run_disk_health(paths, notifier)
 
     assert results[0]["path"] == "/data"
@@ -159,7 +159,7 @@ async def test_exactly_at_warning_threshold_emits_warning():
 
     # 85% exactly: total=100, free=15
     with patch(
-        "doctarr.disk_health.shutil.disk_usage",
+        "docktarr.disk_health.shutil.disk_usage",
         return_value=_fake_usage(total_gb=100, free_gb=15),
     ):
         results = await run_disk_health([dp], notifier)
@@ -177,7 +177,7 @@ async def test_custom_thresholds_respected():
 
     # 60% used: below custom critical (75%) but above custom warning (50%)
     with patch(
-        "doctarr.disk_health.shutil.disk_usage",
+        "docktarr.disk_health.shutil.disk_usage",
         return_value=_fake_usage(total_gb=10, free_gb=4),
     ):
         results = await run_disk_health([dp], notifier)

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import docker
 import docker.errors
 
-log = logging.getLogger("doctarr.docker")
+log = logging.getLogger("docktarr.docker")
 
 
 @dataclass(frozen=True)

@@ -37,5 +37,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/codewarrior4life/doctarr:latest
-            ghcr.io/codewarrior4life/doctarr:${{ github.sha }}
+            ghcr.io/codewarrior4life/docktarr:latest
+            ghcr.io/codewarrior4life/docktarr:${{ github.sha }}

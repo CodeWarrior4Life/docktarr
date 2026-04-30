@@ -10,25 +10,25 @@ from pathlib import Path
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from doctarr.arrclient import ArrClient
-from doctarr.config import Config, parse_duration
-from doctarr.discovery import run_discovery
-from doctarr.docker_manager import DockerManager
-from doctarr.hw_capability import run_hw_capability, HWCapabilityReport
-from doctarr.http_health import HealthServer, HealthState
-from doctarr.media_container_audit import run_media_container_audit
-from doctarr.notifier import Notifier
-from doctarr.permissions_health import run_permissions_health
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.pruner import run_pruner
-from doctarr.qbittorrent import QBitClient
-from doctarr.imposter_detector import run_imposter_backfill, run_imposter_detector
-from doctarr.ssh_client import SSHClient, resolve_ssh_ref
-from doctarr.stall_detector import run_stall_detector
-from doctarr.state import IndexerState, IndexerStatus, StateStore
-from doctarr.tester import run_tester
+from docktarr.arrclient import ArrClient
+from docktarr.config import Config, parse_duration
+from docktarr.discovery import run_discovery
+from docktarr.docker_manager import DockerManager
+from docktarr.hw_capability import run_hw_capability, HWCapabilityReport
+from docktarr.http_health import HealthServer, HealthState
+from docktarr.media_container_audit import run_media_container_audit
+from docktarr.notifier import Notifier
+from docktarr.permissions_health import run_permissions_health
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.pruner import run_pruner
+from docktarr.qbittorrent import QBitClient
+from docktarr.imposter_detector import run_imposter_backfill, run_imposter_detector
+from docktarr.ssh_client import SSHClient, resolve_ssh_ref
+from docktarr.stall_detector import run_stall_detector
+from docktarr.state import IndexerState, IndexerStatus, StateStore
+from docktarr.tester import run_tester
 
-log = logging.getLogger("doctarr")
+log = logging.getLogger("docktarr")
 
 
 async def _build_scheduler_for_test(
@@ -37,13 +37,13 @@ async def _build_scheduler_for_test(
     """Build scheduler + health_state WITHOUT starting the scheduler or health server.
 
     Used by integration tests to verify wire-up without hitting real network resources.
-    When DOCTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
+    When DOCKTARR_SKIP_NETWORK_INIT=1 is set, skips all calls that require live network
     (prowlarr.ensure_tag, _reconcile, qbit.login).
 
     Returns (scheduler, health_state, http, qbit, arr_clients, hw_clients, ph_ssh,
              plex_client, vpn_http) — callers are responsible for cleanup.
     """
-    skip_network = os.environ.get("DOCTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
+    skip_network = os.environ.get("DOCKTARR_SKIP_NETWORK_INIT", "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -73,11 +73,11 @@ async def _build_scheduler_for_test(
 
     if skip_network:
         tag_id = 0
-        log.info("DOCTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
+        log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
     else:
-        # Ensure doctarr tag exists
-        tag_id = await prowlarr.ensure_tag("doctarr")
-        log.info("Using Prowlarr tag 'doctarr' (id=%d)", tag_id)
+        # Ensure docktarr tag exists
+        tag_id = await prowlarr.ensure_tag("docktarr")
+        log.info("Using Prowlarr tag 'docktarr' (id=%d)", tag_id)
         # Reconcile state with Prowlarr on startup
         await _reconcile(prowlarr, state, tag_id)
 
@@ -132,7 +132,7 @@ async def _build_scheduler_for_test(
     if config.qbit_url and config.qbit_username and config.qbit_password:
         qbit = QBitClient(config.qbit_url, config.qbit_username, config.qbit_password)
         if skip_network:
-            log.info("DOCTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
+            log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
         else:
             await qbit.login()
             log.info("qBittorrent connected at %s", config.qbit_url)
@@ -207,7 +207,7 @@ async def _build_scheduler_for_test(
     # --- qbit_health (ported from arr-orchestrator, T13) ---
     docker_mgr: DockerManager | None = None
     if config.qbit_url and config.qbit_username and config.qbit_password and qbit:
-        from doctarr.qbit_health import run_qbit_health, QbitHealthConfig
+        from docktarr.qbit_health import run_qbit_health, QbitHealthConfig
 
         qbit_container = os.environ.get("QBITTORRENT_CONTAINER", "qbittorrent").strip()
         qbit_health_cfg = QbitHealthConfig(
@@ -235,7 +235,7 @@ async def _build_scheduler_for_test(
     # --- vpn_health (ported from arr-orchestrator, T14) ---
     _vpn_healthcheck_url = os.environ.get("VPN_HEALTHCHECK_URL", "").strip()
     if _vpn_healthcheck_url:
-        from doctarr.vpn_health import run_vpn_health, VpnHealthConfig
+        from docktarr.vpn_health import run_vpn_health, VpnHealthConfig
 
         _vpn_container = os.environ.get("VPN_CONTAINER", "gluetun").strip()
         _vpn_regions_raw = os.environ.get(
@@ -277,7 +277,7 @@ async def _build_scheduler_for_test(
     # --- disk_health (ported from arr-orchestrator, T15) ---
     _disk_paths_raw = os.environ.get("DISK_HEALTH_PATHS", "").strip()
     if _disk_paths_raw:
-        from doctarr.disk_health import run_disk_health, DiskPath
+        from docktarr.disk_health import run_disk_health, DiskPath
 
         _disk_warning_pct = float(os.environ.get("DISK_WARNING_PCT", "85.0"))
         _disk_critical_pct = float(os.environ.get("DISK_CRITICAL_PCT", "95.0"))
@@ -309,7 +309,7 @@ async def _build_scheduler_for_test(
 
     # --- arr_services (ported from arr-orchestrator, T15) ---
     if arr_clients:
-        from doctarr.arr_services import run_arr_services
+        from docktarr.arr_services import run_arr_services
 
         async def _arr_services_job():
             await run_arr_services(arr_clients, notifier)
@@ -368,7 +368,7 @@ async def _build_scheduler_for_test(
     if config.yaml.media_container_audit and config.yaml.media_container_audit.enabled:
         audit_docker: dict[str, DockerManager] = {}
         audit_ssh: dict[str, SSHClient] = {}
-        local_host = os.environ.get("DOCTARR_HOST_NAME", "zion")
+        local_host = os.environ.get("DOCKTARR_HOST_NAME", "zion")
         for spec in config.yaml.media_container_audit.containers:
             # Reuse SSH client from hw_capability if same host
             if spec.host not in audit_ssh and spec.host in hw_clients:
@@ -442,7 +442,7 @@ async def _build_scheduler_for_test(
         plex_url = os.environ.get("PLEX_URL", "").strip()
         plex_token = os.environ.get("PLEX_TOKEN", "").strip()
         if plex_url and plex_token:
-            from doctarr.plex_api import PlexClient
+            from docktarr.plex_api import PlexClient
 
             plex_client = PlexClient(plex_url, plex_token)
 
@@ -498,7 +498,7 @@ async def main() -> None:
 
     log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
 
-    # Build scheduler and all components (skips network if DOCTARR_SKIP_NETWORK_INIT=1)
+    # Build scheduler and all components (skips network if DOCKTARR_SKIP_NETWORK_INIT=1)
     (
         scheduler,
         health_state,

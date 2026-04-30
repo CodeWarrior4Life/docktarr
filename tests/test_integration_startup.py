@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from doctarr.http_health import HealthState
+from docktarr.http_health import HealthState
 
 
 @pytest.mark.asyncio
 async def test_scheduler_starts_with_all_modules_enabled(tmp_path, monkeypatch):
     """All v0.4 modules must register their jobs when given valid YAML config."""
-    yaml_path = tmp_path / "doctarr.yaml"
+    yaml_path = tmp_path / "docktarr.yaml"
     yaml_path.write_text(
         """
 hw_capability:
@@ -49,9 +49,9 @@ permission_health:
     monkeypatch.setenv("PROWLARR_API_KEY", "x")
     monkeypatch.setenv("ZION_SUDO_PASSWORD", "p")
     monkeypatch.setenv("MEGACITY_SUDO_PASSWORD", "p")
-    monkeypatch.setenv("DOCTARR_SKIP_NETWORK_INIT", "1")
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
 
-    from doctarr.main import _build_scheduler_for_test
+    from docktarr.main import _build_scheduler_for_test
 
     result = await _build_scheduler_for_test(yaml_path)
     scheduler, health_state = result[0], result[1]
@@ -82,12 +82,12 @@ async def test_scheduler_minimal_config(tmp_path, monkeypatch):
     """Minimal env (no YAML modules) still registers core jobs."""
     monkeypatch.setenv("PROWLARR_URL", "http://prowlarr.invalid:9696")
     monkeypatch.setenv("PROWLARR_API_KEY", "x")
-    monkeypatch.setenv("DOCTARR_SKIP_NETWORK_INIT", "1")
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
 
     # Point at an empty yaml path (file doesn't exist — load_yaml_config returns defaults)
     yaml_path = tmp_path / "empty.yaml"
 
-    from doctarr.main import _build_scheduler_for_test
+    from docktarr.main import _build_scheduler_for_test
 
     result = await _build_scheduler_for_test(yaml_path)
     scheduler, health_state = result[0], result[1]

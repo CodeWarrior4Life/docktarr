@@ -1,5 +1,5 @@
 import pytest
-from doctarr.http_health import HealthServer, HealthState
+from docktarr.http_health import HealthServer, HealthState
 
 
 @pytest.mark.asyncio

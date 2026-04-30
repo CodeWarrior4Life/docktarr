@@ -5,11 +5,11 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable
 
-from doctarr.docker_manager import ContainerInfo
-from doctarr.hw_capability import HWAccelerator, HWCapabilityReport
-from doctarr.yaml_config import MediaContainer
+from docktarr.docker_manager import ContainerInfo
+from docktarr.hw_capability import HWAccelerator, HWCapabilityReport
+from docktarr.yaml_config import MediaContainer
 
-log = logging.getLogger("doctarr.audit")
+log = logging.getLogger("docktarr.audit")
 
 
 class AuditStatus(str, enum.Enum):
@@ -104,7 +104,7 @@ async def run_media_container_audit(
             )
             continue
 
-        # Read Plex prefs via SSH (since doctarr doesn't share host FS with Plex container)
+        # Read Plex prefs via SSH (since docktarr doesn't share host FS with Plex container)
         ssh = ssh_clients.get(spec.host)
         prefs = await _read_plex_prefs(ssh, spec) if ssh else {}
         available_hw = hw_report.by_host.get(spec.host, [])
@@ -138,7 +138,7 @@ async def _read_plex_prefs(ssh, spec: MediaContainer) -> dict[str, str]:
             "audit: failed to read prefs on %s: %s", spec.host, result.stderr[:200]
         )
         return {}
-    from doctarr.plex_api import parse_preferences_xml
+    from docktarr.plex_api import parse_preferences_xml
 
     try:
         parsed = parse_preferences_xml(result.stdout)

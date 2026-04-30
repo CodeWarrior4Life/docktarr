@@ -2,10 +2,10 @@ import json as _json
 
 import httpx
 import pytest
-from doctarr.discovery import run_discovery
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.state import IndexerStatus, StateStore
+from docktarr.discovery import run_discovery
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.state import IndexerStatus, StateStore
 
 
 def make_schema(name: str, privacy: str = "public", protocol: str = "torrent") -> dict:
@@ -59,7 +59,7 @@ class TestDiscovery:
             if path == "/api/v1/tag" and method == "GET":
                 return httpx.Response(200, json=tags)
             if path == "/api/v1/tag" and method == "POST":
-                return httpx.Response(201, json={"id": 5, "label": "doctarr"})
+                return httpx.Response(201, json={"id": 5, "label": "docktarr"})
             return httpx.Response(404)
 
         transport = httpx.MockTransport(handler)
@@ -73,7 +73,7 @@ class TestDiscovery:
             make_schema("MAM", privacy="private"),
         ]
         prowlarr, added = self._make_prowlarr(
-            schemas, [], [{"id": 5, "label": "doctarr"}]
+            schemas, [], [{"id": 5, "label": "docktarr"}]
         )
 
         await run_discovery(prowlarr, state_store, notifier, tag_id=5)
@@ -88,7 +88,7 @@ class TestDiscovery:
         schemas = [make_schema("1337x"), make_schema("TPB")]
         existing = [{"id": 1, "definitionName": "1337x", "tags": [5], "enable": True}]
         prowlarr, added = self._make_prowlarr(
-            schemas, existing, [{"id": 5, "label": "doctarr"}]
+            schemas, existing, [{"id": 5, "label": "docktarr"}]
         )
 
         await run_discovery(prowlarr, state_store, notifier, tag_id=5)
@@ -99,7 +99,7 @@ class TestDiscovery:
     async def test_skips_usenet_indexers(self, state_store, notifier):
         schemas = [make_schema("NZBgeek", protocol="usenet")]
         prowlarr, added = self._make_prowlarr(
-            schemas, [], [{"id": 5, "label": "doctarr"}]
+            schemas, [], [{"id": 5, "label": "docktarr"}]
         )
 
         await run_discovery(prowlarr, state_store, notifier, tag_id=5)

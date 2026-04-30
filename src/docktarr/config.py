@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
-from doctarr.yaml_config import YamlConfig, load_yaml_config
+from docktarr.yaml_config import YamlConfig, load_yaml_config
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([smhd]?)$", re.IGNORECASE)
 
@@ -145,7 +145,7 @@ class Config:
 
     @classmethod
     def from_env_and_yaml(
-        cls, yaml_path: Path | str = "/config/doctarr.yaml"
+        cls, yaml_path: Path | str = "/config/docktarr.yaml"
     ) -> Config:
         base = cls.from_env()
         yaml_cfg = load_yaml_config(yaml_path)

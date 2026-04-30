@@ -1,12 +1,12 @@
 from pathlib import Path
 import pytest
-from doctarr.hw_capability import (
+from docktarr.hw_capability import (
     HWAccelerator,
     detect_from_outputs,
     HWCapabilityReport,
     run_hw_capability,
 )
-from doctarr.ssh_client import _FakeSSHConnection, SSHClient, SSHRef
+from docktarr.ssh_client import _FakeSSHConnection, SSHClient, SSHRef
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

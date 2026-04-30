@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from doctarr.docker_manager import ContainerInfo
-from doctarr.notifier import Notifier
-from doctarr.qbittorrent import QBitClient
-from doctarr.qbit_health import QbitHealthConfig, run_qbit_health
+from docktarr.docker_manager import ContainerInfo
+from docktarr.notifier import Notifier
+from docktarr.qbittorrent import QBitClient
+from docktarr.qbit_health import QbitHealthConfig, run_qbit_health
 
 
 # ---------------------------------------------------------------------------

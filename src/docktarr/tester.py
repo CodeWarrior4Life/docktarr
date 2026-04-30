@@ -4,9 +4,9 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from doctarr.notifier import Notifier
-from doctarr.prowlarr import ProwlarrClient
-from doctarr.state import IndexerState, IndexerStatus, StateStore
+from docktarr.notifier import Notifier
+from docktarr.prowlarr import ProwlarrClient
+from docktarr.state import IndexerState, IndexerStatus, StateStore
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ async def run_tester(
     tag_id: int,
     test_delay: float = 2.0,
 ) -> None:
-    """Test all doctarr-managed indexers and update their state."""
+    """Test all docktarr-managed indexers and update their state."""
     log.info("Tester: checking indexer health")
 
     indexers = await prowlarr.get_indexers_by_tag(tag_id)

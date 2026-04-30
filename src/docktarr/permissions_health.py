@@ -4,10 +4,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-from doctarr.ssh_client import SSHClient
-from doctarr.yaml_config import PermissionPathConfig
+from docktarr.ssh_client import SSHClient
+from docktarr.yaml_config import PermissionPathConfig
 
-log = logging.getLogger("doctarr.perms")
+log = logging.getLogger("docktarr.perms")
 
 Reason = Literal["wrong_owner", "wrong_group", "mode_too_restrictive"]
 
@@ -243,7 +243,7 @@ async def apply_fixes(
 
 
 def translate_path(path: str, translation: dict[str, str]) -> str:
-    """Translate doctarr-visible path to remote-host path using longest-prefix match."""
+    """Translate docktarr-visible path to remote-host path using longest-prefix match."""
     best_prefix = ""
     best_replacement = ""
     for prefix, replacement in translation.items():

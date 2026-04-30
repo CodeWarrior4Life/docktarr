@@ -1,11 +1,11 @@
 import pytest
-from doctarr.permissions_health import (
+from docktarr.permissions_health import (
     PermissionFinding,
     PermissionReport,
     parse_find_output,
     tally_report,
 )
-from doctarr.yaml_config import PermissionPathConfig
+from docktarr.yaml_config import PermissionPathConfig
 
 
 PATH_CFG = PermissionPathConfig(
@@ -54,8 +54,8 @@ def test_tally_report_flags_mode_too_restrictive():
     assert report.findings[0].reason == "mode_too_restrictive"
 
 
-from doctarr.ssh_client import SSHClient, SSHRef, _FakeSSHConnection
-from doctarr.permissions_health import apply_fixes, FixReport
+from docktarr.ssh_client import SSHClient, SSHRef, _FakeSSHConnection
+from docktarr.permissions_health import apply_fixes, FixReport
 
 
 @pytest.mark.asyncio
@@ -207,7 +207,7 @@ async def test_apply_fixes_skips_hardlinked_files():
 async def test_apply_fixes_emits_skipped_hardlinks_event():
     import json
     import httpx
-    from doctarr.notifier import Notifier
+    from docktarr.notifier import Notifier
 
     captured_events: list[dict] = []
 
