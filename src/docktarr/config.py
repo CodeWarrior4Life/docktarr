@@ -69,6 +69,8 @@ class Config:
     test_delay: timedelta
     webhook_url: str | None
     webhook_events: list[str]
+    telegram_bot_token: str | None
+    telegram_chat_id: str | None
     digest_time: str
     log_level: str
     tz: str
@@ -95,9 +97,16 @@ class Config:
         api_key = _require_env("PROWLARR_API_KEY")
         webhook_url = os.environ.get("WEBHOOK_URL", "").strip() or None
         events_raw = os.environ.get(
-            "WEBHOOK_EVENTS", "added,pruned,digest,stall.cleared"
+            "WEBHOOK_EVENTS",
+            "added,pruned,digest,stall.cleared,"
+            "qbit.restarted,qbit.stale_namespace_restart,"
+            "qbit.unreachable_threshold_restart,qbit.restart_failed,"
+            "arr.restarted,arr.unreachable_threshold_restart,arr.restart_failed,"
+            "imposter.detected",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
+        telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
+        telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
 
         # Build arr app list from env vars
         arr_apps = []
@@ -137,6 +146,8 @@ class Config:
             test_delay=parse_duration(os.environ.get("TEST_DELAY", "2s")),
             webhook_url=webhook_url,
             webhook_events=webhook_events,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
             digest_time=os.environ.get("DIGEST_TIME", "08:00").strip(),
             log_level=os.environ.get("LOG_LEVEL", "info").strip().lower(),
             tz=os.environ.get("TZ", "UTC").strip(),

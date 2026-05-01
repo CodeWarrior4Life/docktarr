@@ -69,7 +69,11 @@ async def _build_scheduler_for_test(
         client=httpx.AsyncClient(timeout=10.0),
         webhook_url=config.webhook_url,
         enabled_events=config.webhook_events,
+        telegram_bot_token=config.telegram_bot_token,
+        telegram_chat_id=config.telegram_chat_id,
     )
+    if notifier.telegram_enabled:
+        log.info("Telegram notifications enabled (chat_id=%s)", config.telegram_chat_id)
 
     if skip_network:
         tag_id = 0

@@ -164,18 +164,66 @@ async def test_unreachable_container_running_no_restart():
 
 
 @pytest.mark.asyncio
-async def test_unreachable_exit_non_137_no_restart():
-    """Exited with a code other than 137 — do not auto-restart."""
+async def test_unreachable_exit_non_137_triggers_restart():
+    """Exited with any non-running status (any exit code) -> restart with cooldown.
+
+    Real case (2026-05-01): qBit exited with 255 after gluetun cycle + NFS hiccup;
+    pre-fix qbit_health saw it and did nothing (only 137 triggered restart).
+    """
     qbit = _make_qbit_unreachable()
-    container = _make_container(status="exited", exit_code=1)
+    container = _make_container(status="exited", exit_code=255)
     dm = _make_docker(container)
     notifier, events = _make_notifier()
+    state = QbitHealthState()
     config = QbitHealthConfig(container_name="qbittorrent")
 
-    await run_qbit_health(qbit, dm, notifier, config)
+    await run_qbit_health(qbit, dm, notifier, config, state=state)
 
-    dm.restart.assert_not_called()
-    assert events == []
+    dm.restart.assert_awaited_once_with("qbittorrent")
+    assert any(e["event"] == "qbit.restarted" for e in events)
+    restart_event = next(e for e in events if e["event"] == "qbit.restarted")
+    assert restart_event["payload"]["exit_code"] == 255
+
+
+@pytest.mark.asyncio
+async def test_exit_within_cooldown_no_restart():
+    """A second exited tick within cooldown does NOT issue a second restart."""
+    qbit = _make_qbit_unreachable()
+    container = _make_container(status="exited", exit_code=255)
+    dm = _make_docker(container)
+    dm.restart = AsyncMock(side_effect=RuntimeError("nfs busy"))
+    notifier, _events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent",
+        restart_cooldown=timedelta(minutes=15),
+    )
+
+    # tick 1 attempts restart (and fails)
+    await run_qbit_health(qbit, dm, notifier, config, state=state)
+    assert dm.restart.await_count == 1
+
+    # tick 2 immediately after: cooldown active, no second restart
+    await run_qbit_health(qbit, dm, notifier, config, state=state)
+    assert dm.restart.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_failure_emits_event():
+    """If docker.restart raises (e.g. NFS dead), emit qbit.restart_failed, no crash."""
+    qbit = _make_qbit_unreachable()
+    container = _make_container(status="exited", exit_code=255)
+    dm = _make_docker(container)
+    dm.restart = AsyncMock(side_effect=RuntimeError("failed to mount volume"))
+    notifier, events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(container_name="qbittorrent")
+
+    await run_qbit_health(qbit, dm, notifier, config, state=state)
+
+    assert any(e["event"] == "qbit.restart_failed" for e in events)
+    failure = next(e for e in events if e["event"] == "qbit.restart_failed")
+    assert "failed to mount volume" in failure["payload"]["error"]
 
 
 @pytest.mark.asyncio

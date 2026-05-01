@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from docktarr.docker_manager import ContainerInfo, DockerManager
@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _OOM_EXIT_CODE = 137  # SIGKILL — gluetun network teardown kills qBit (Pattern 1)
+_DEFAULT_COOLDOWN = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -63,18 +64,15 @@ class QbitHealthConfig:
     protected_categories: list[str] = field(default_factory=lambda: ["MAM"])
     vpn_container_name: str | None = "gluetun"
     running_unreachable_threshold: int = 2
+    restart_cooldown: timedelta = _DEFAULT_COOLDOWN
 
 
 @dataclass
 class QbitHealthState:
-    """Mutable per-instance state shared across scheduler ticks.
-
-    Tracks how many consecutive ticks qBit has been "running but unreachable"
-    so the threshold-based fallback can fire after the namespace-comparison
-    path declines to act.
-    """
+    """Mutable per-instance state shared across scheduler ticks."""
 
     consecutive_unreachable: int = 0
+    last_restart_attempt: datetime | None = None
 
 
 async def run_qbit_health(
@@ -90,8 +88,9 @@ async def run_qbit_health(
     if state is None:
         state = QbitHealthState()
 
+    now = datetime.now(timezone.utc)
     snapshot: dict = {
-        "last_check": datetime.now(timezone.utc).isoformat(),
+        "last_check": now.isoformat(),
         "reachable": None,
         "container_status": None,
         "container_exit_code": None,
@@ -156,14 +155,56 @@ async def run_qbit_health(
     )
 
     # ------------------------------------------------------------------
-    # 3a. Exit-137 (gluetun network teardown killed the container)
+    # 3a. Container is not running — restart with cooldown.
     # ------------------------------------------------------------------
-    if info.status != "running" and info.exit_code == _OOM_EXIT_CODE:
+    # Pre-0.5.4 only restarted on exit 137 (Pattern 1 OOM kill). In practice
+    # other exit codes (e.g. 255 from a failed volume mount during a gluetun
+    # cycle) are equally recoverable by a fresh start, and leaving qBit dead
+    # cascades into the entire arr stack going dark. Restart on ANY non-running
+    # status, with a per-instance cooldown so we don't hammer Docker if the
+    # underlying issue (NFS dead, image pull denied, etc.) keeps making
+    # restarts fail.
+    if info.status != "running":
+        last_attempt = state.last_restart_attempt
+        if last_attempt and (now - last_attempt) < config.restart_cooldown:
+            log.info(
+                "qBit health: container %r exited (code=%r) but in restart cooldown "
+                "(last attempt %s, cooldown %s) — skipping",
+                config.container_name,
+                info.exit_code,
+                last_attempt.isoformat(),
+                config.restart_cooldown,
+            )
+            snapshot["last_action"] = "cooldown"
+            _publish()
+            return
+
+        state.last_restart_attempt = now
+        try:
+            await docker_manager.restart(config.container_name)
+        except Exception as exc:
+            log.error(
+                "qBit health: failed to restart container %r: %s",
+                config.container_name,
+                exc,
+            )
+            await notifier.emit(
+                "qbit.restart_failed",
+                {
+                    "container_name": config.container_name,
+                    "exit_code": info.exit_code,
+                    "error": str(exc),
+                },
+            )
+            snapshot["last_action"] = "restart_failed"
+            _publish()
+            return
+
         log.info(
-            "qBit health: container exited with code 137 — restarting %r",
+            "qBit health: restarted container %r (was exited code=%r)",
             config.container_name,
+            info.exit_code,
         )
-        await docker_manager.restart(config.container_name)
         await notifier.emit(
             "qbit.restarted",
             {
@@ -172,18 +213,11 @@ async def run_qbit_health(
             },
         )
         state.consecutive_unreachable = 0
-        snapshot["last_action"] = "restart_exit_137"
-        _publish()
-        return
-
-    if info.status != "running":
-        log.error(
-            "qBit health: container %r exited with code %r (not 137) — "
-            "manual intervention required",
-            config.container_name,
-            info.exit_code,
+        snapshot["last_action"] = (
+            "restart_exit_137"
+            if info.exit_code == _OOM_EXIT_CODE
+            else "restart_after_exit"
         )
-        snapshot["last_action"] = "exited_no_auto_restart"
         _publish()
         return
 

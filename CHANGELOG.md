@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0 — 2026-05-01
+
+### Fixed
+- **qbit_health: restart on any non-running status, not just exit 137.** Today's
+  zion outage saw qBit exit with 255 (volume mount failed during a gluetun
+  cycle / NFS hiccup) and the previous logic logged `exited_no_auto_restart`
+  and did nothing. Cascade: dead qBit → arr stack failures, stack stayed dark
+  until manual intervention. Now any `status != "running"` triggers a restart
+  attempt, with a per-instance cooldown (default 15 min) and `qbit.restart_failed`
+  event when the restart itself raises (e.g. the underlying volume is still
+  broken). Same shape as `arr_services` recovery shipped in 0.5.2.
+
+### Added
+- **Telegram notifier sink.** `Notifier` now supports an optional Telegram
+  outbound sink alongside the existing Discord webhook. Configure with
+  `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` env vars. Both sinks fire
+  independently; either, both, or neither can be configured. Sink failures
+  are logged but never raised. Plain text rendering (Discord-style `**bold**`
+  is stripped before send so we don't fight Telegram's Markdown parser).
+  Inbound bot semantics (slash commands, ACL) are deliberately out of scope —
+  see `lattice-telegram` for projects that need that.
+- `Notifier.telegram_enabled` property (true when both bot_token and chat_id
+  are set).
+- `QbitHealthState.last_restart_attempt` for cooldown tracking.
+- `QbitHealthConfig.restart_cooldown` (default 15 min).
+- New event template: `qbit.restart_failed`. Templates added for the
+  0.5.x events that were previously falling through to the generic format:
+  `qbit.stale_namespace_restart`, `qbit.unreachable_threshold_restart`,
+  `arr.restarted`, `arr.unreachable_threshold_restart`, `arr.restart_failed`.
+- `WEBHOOK_EVENTS` default expanded to include the operational events from
+  0.5.x (qbit.* and arr.* family + `imposter.detected`). Previously only
+  `added,pruned,digest,stall.cleared` were enabled by default, so all the
+  new recovery events were silently dropped unless operators opted in.
+
+### Changed
+- `last_action` value `restart_after_exit` is now used for non-137 exits
+  (was `exited_no_auto_restart`). 137 retains the explicit
+  `restart_exit_137` action label so timeline analysis can still see which
+  variant of Pattern 1 triggered.
+
 ## 0.5.3 — 2026-05-01
 
 ### Fixed

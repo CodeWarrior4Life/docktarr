@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docktarr"
-version = "0.5.3"
+version = "0.6.0"
 description = "Autonomous indexer manager for Prowlarr"
 readme = "README.md"
 license = "MIT"
