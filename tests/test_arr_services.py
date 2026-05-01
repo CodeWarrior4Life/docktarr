@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
-from docktarr.arr_services import run_arr_services
+from docktarr.arr_services import ArrServicesState, run_arr_services
 from docktarr.arrclient import ArrClient
 from docktarr.config import ArrAppConfig
+from docktarr.docker_manager import ContainerInfo
+from docktarr.http_health import HealthState
 from docktarr.notifier import Notifier
 
 
@@ -40,6 +43,7 @@ def _make_client(
     status_code: int = 200,
     body: list | None = None,
     connect_error: bool = False,
+    container_name: str | None = None,
 ) -> ArrClient:
     """Return an ArrClient backed by a MockTransport."""
 
@@ -50,10 +54,45 @@ def _make_client(
             return httpx.Response(status_code, json=body)
         return httpx.Response(status_code)
 
-    cfg = ArrAppConfig(url="http://localhost:8989", api_key="testkey", name=name)
+    cfg = ArrAppConfig(
+        url="http://localhost:8989",
+        api_key="testkey",
+        name=name,
+        container_name=container_name,
+    )
     client = ArrClient(cfg)
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return client
+
+
+def _make_docker_multi(containers: dict[str, ContainerInfo]) -> MagicMock:
+    """DockerManager mock that dispatches by container name."""
+    dm = MagicMock()
+
+    async def _get(name: str) -> ContainerInfo:
+        if name not in containers:
+            raise LookupError(f"container {name!r} not found")
+        return containers[name]
+
+    dm.get_container = AsyncMock(side_effect=_get)
+    dm.restart = AsyncMock()
+    return dm
+
+
+def _container(
+    *,
+    name: str,
+    status: str,
+    exit_code: int | None = None,
+    started_at: datetime | None = None,
+) -> ContainerInfo:
+    return ContainerInfo(
+        name=name,
+        status=status,
+        image="example:latest",
+        exit_code=exit_code,
+        started_at=started_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,3 +262,240 @@ async def test_readarr_uses_v1_api_version():
     await run_arr_services({"Readarr": client}, notifier)
 
     assert any("/api/v1/health" in u for u in probed_urls)
+
+
+# ---------------------------------------------------------------------------
+# Container recovery (0.5.2): restart exited / threshold-restart unreachable
+# ---------------------------------------------------------------------------
+
+
+_BASE = datetime(2026, 5, 1, 6, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_arr_app_default_container_name_is_lowercase():
+    """ArrAppConfig.container_name defaults to name.lower() when not provided."""
+    cfg = ArrAppConfig(url="http://localhost:8989", api_key="k", name="Sonarr")
+    assert cfg.effective_container_name == "sonarr"
+
+
+@pytest.mark.asyncio
+async def test_arr_app_container_name_override():
+    """ArrAppConfig.container_name override is honored."""
+    cfg = ArrAppConfig(
+        url="http://localhost:8788",
+        api_key="k",
+        name="Readarr",
+        container_name="readarr-audiobooks",
+    )
+    assert cfg.effective_container_name == "readarr-audiobooks"
+
+
+@pytest.mark.asyncio
+async def test_exited_container_triggers_restart():
+    """Container exited + service unreachable -> restart, emit arr.restarted."""
+    client = _make_client("Bookshelf", connect_error=True, container_name="bookshelf")
+    dm = _make_docker_multi(
+        {"bookshelf": _container(name="bookshelf", status="exited", exit_code=255)}
+    )
+    notifier, events = _make_notifier()
+    state = ArrServicesState()
+
+    results = await run_arr_services(
+        {"Bookshelf": client}, notifier, docker_manager=dm, state=state
+    )
+
+    dm.restart.assert_awaited_once_with("bookshelf")
+    assert any(e["event"] == "arr.restarted" for e in events)
+    restart_event = next(e for e in events if e["event"] == "arr.restarted")
+    assert restart_event["payload"]["name"] == "Bookshelf"
+    assert restart_event["payload"]["container_name"] == "bookshelf"
+    assert results[0]["last_action"] == "restarted_after_exit"
+
+
+@pytest.mark.asyncio
+async def test_running_unreachable_grace_first_tick():
+    """Container running but unreachable -> no restart on first tick, counter increments."""
+    client = _make_client("Sonarr", connect_error=True, container_name="sonarr")
+    dm = _make_docker_multi(
+        {"sonarr": _container(name="sonarr", status="running", started_at=_BASE)}
+    )
+    notifier, events = _make_notifier()
+    state = ArrServicesState()
+
+    await run_arr_services(
+        {"Sonarr": client},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        running_unreachable_threshold=3,
+    )
+
+    dm.restart.assert_not_called()
+    assert state.consecutive_unreachable["Sonarr"] == 1
+
+
+@pytest.mark.asyncio
+async def test_running_unreachable_consecutive_threshold_triggers_restart():
+    """N consecutive running-but-unreachable ticks -> restart with threshold event."""
+    client = _make_client("Sonarr", connect_error=True, container_name="sonarr")
+    dm = _make_docker_multi(
+        {"sonarr": _container(name="sonarr", status="running", started_at=_BASE)}
+    )
+    notifier, events = _make_notifier()
+    state = ArrServicesState()
+
+    # tick 1
+    await run_arr_services(
+        {"Sonarr": client},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        running_unreachable_threshold=2,
+    )
+    dm.restart.assert_not_called()
+    # tick 2 hits threshold
+    await run_arr_services(
+        {"Sonarr": client},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        running_unreachable_threshold=2,
+    )
+    dm.restart.assert_awaited_once_with("sonarr")
+    assert any(e["event"] == "arr.unreachable_threshold_restart" for e in events)
+    assert state.consecutive_unreachable["Sonarr"] == 0
+
+
+@pytest.mark.asyncio
+async def test_alive_resets_consecutive_counter():
+    """Successful probe after failures resets the counter."""
+    sick = _make_client("Sonarr", connect_error=True, container_name="sonarr")
+    well = _make_client("Sonarr", status_code=200, body=[], container_name="sonarr")
+    dm = _make_docker_multi(
+        {"sonarr": _container(name="sonarr", status="running", started_at=_BASE)}
+    )
+    notifier, _events = _make_notifier()
+    state = ArrServicesState()
+
+    await run_arr_services(
+        {"Sonarr": sick},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        running_unreachable_threshold=5,
+    )
+    assert state.consecutive_unreachable["Sonarr"] == 1
+
+    await run_arr_services(
+        {"Sonarr": well},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        running_unreachable_threshold=5,
+    )
+    assert state.consecutive_unreachable.get("Sonarr", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_container_not_found_no_restart():
+    """If container can't be found via docker, log and don't crash or restart."""
+    client = _make_client("Sonarr", connect_error=True, container_name="sonarr")
+    dm = _make_docker_multi({})  # no containers
+    notifier, events = _make_notifier()
+    state = ArrServicesState()
+
+    results = await run_arr_services(
+        {"Sonarr": client}, notifier, docker_manager=dm, state=state
+    )
+
+    dm.restart.assert_not_called()
+    assert results[0]["last_action"] == "container_not_found"
+
+
+@pytest.mark.asyncio
+async def test_restart_failure_emits_event_and_continues():
+    """Restart raising (e.g. NFS mount fails) -> emit arr.restart_failed, no crash."""
+    client = _make_client("Bookshelf", connect_error=True, container_name="bookshelf")
+    dm = _make_docker_multi(
+        {"bookshelf": _container(name="bookshelf", status="exited", exit_code=255)}
+    )
+    dm.restart = AsyncMock(
+        side_effect=RuntimeError("failed to mount volume MediaMegaCityNFS")
+    )
+    notifier, events = _make_notifier()
+    state = ArrServicesState()
+
+    results = await run_arr_services(
+        {"Bookshelf": client}, notifier, docker_manager=dm, state=state
+    )
+
+    assert any(e["event"] == "arr.restart_failed" for e in events)
+    failure = next(e for e in events if e["event"] == "arr.restart_failed")
+    assert "MediaMegaCityNFS" in failure["payload"]["error"]
+    assert results[0]["last_action"] == "restart_failed"
+
+
+@pytest.mark.asyncio
+async def test_restart_cooldown_prevents_hammering():
+    """A second exited tick within cooldown does NOT issue a second restart."""
+    client = _make_client("Bookshelf", connect_error=True, container_name="bookshelf")
+    dm = _make_docker_multi(
+        {"bookshelf": _container(name="bookshelf", status="exited", exit_code=255)}
+    )
+    dm.restart = AsyncMock(side_effect=RuntimeError("nfs busy"))
+    notifier, _events = _make_notifier()
+    state = ArrServicesState()
+
+    # First tick: attempts restart (and fails)
+    await run_arr_services(
+        {"Bookshelf": client},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        restart_cooldown=timedelta(minutes=15),
+    )
+    assert dm.restart.await_count == 1
+
+    # Second tick immediately after: in cooldown, should NOT call restart again
+    await run_arr_services(
+        {"Bookshelf": client},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        restart_cooldown=timedelta(minutes=15),
+    )
+    assert dm.restart.await_count == 1  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_health_state_records_per_service_snapshot():
+    """When health_state passed, snapshot per service is recorded."""
+    sonarr = _make_client("Sonarr", status_code=200, body=[], container_name="sonarr")
+    bookshelf = _make_client(
+        "Bookshelf", connect_error=True, container_name="bookshelf"
+    )
+    dm = _make_docker_multi(
+        {
+            "sonarr": _container(name="sonarr", status="running"),
+            "bookshelf": _container(name="bookshelf", status="exited", exit_code=255),
+        }
+    )
+    notifier, _events = _make_notifier()
+    state = ArrServicesState()
+    health_state = HealthState()
+
+    await run_arr_services(
+        {"Sonarr": sonarr, "Bookshelf": bookshelf},
+        notifier,
+        docker_manager=dm,
+        state=state,
+        health_state=health_state,
+    )
+
+    snap = health_state.snapshot()
+    assert "arr_services" in snap
+    services = {s["name"]: s for s in snap["arr_services"]}
+    assert services["Sonarr"]["status"] == "ok"
+    assert services["Bookshelf"]["status"] == "down"
+    assert services["Bookshelf"]["last_action"] == "restarted_after_exit"

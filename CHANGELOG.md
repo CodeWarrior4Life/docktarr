@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.2 — 2026-05-01
+
+### Fixed
+- **arr_services: container recovery.** The arr_services job logged warnings
+  when Sonarr/Radarr/Readarr/Bookshelf were unreachable but never took
+  corrective action. Three containers (bookshelf, readarr-audiobooks,
+  audiobookshelf) had been dead for 4 / 4 / 2 days under a transient NFS
+  mount failure that long since resolved itself; docktarr never restarted
+  them. Same gap-class as the qbit_health "running but unreachable" gap
+  fixed in 0.5.1 — same shape of fix.
+
+  - Container exited (any code) → restart, emit `arr.restarted`.
+  - Container running but API unreachable for N consecutive ticks
+    (default 3 ≈ 15 min, higher than qbit_health's 2 because arr apps
+    have legitimately slow startups for db upgrades / library scans) →
+    restart, emit `arr.unreachable_threshold_restart`.
+  - Per-service restart cooldown (default 15 min) prevents hammering
+    docker when restarts keep failing because of an underlying
+    infrastructure issue (e.g. a dead NFS volume).
+  - Container not found / docker error during restart → log + emit
+    `arr.restart_failed`. No crash.
+
+### Added
+- `ArrAppConfig.container_name` (optional) and `effective_container_name`
+  property. Defaults to `name.lower()`; override per-service via env vars
+  `SONARR_CONTAINER`, `RADARR_CONTAINER`, `READARR_CONTAINER`,
+  `BOOKSHELF_CONTAINER`. The Readarr instance commonly runs as
+  `readarr-audiobooks` so override is required there.
+- `ArrClient.container_name` exposed for external use.
+- `ArrServicesState` dataclass tracking per-service `consecutive_unreachable`
+  counter and `last_restart_attempt` timestamp across scheduler ticks.
+- `/health/arr_services` endpoint and `arr_services` field on the main
+  `/health` snapshot. Per-service: `name`, `url`, `status`, `http_status`,
+  `error`, `container_name`, `container_status`, `last_action`.
+- New env vars: `ARR_UNREACHABLE_THRESHOLD` (default `3`),
+  `ARR_RESTART_COOLDOWN` (default `15m`), `<SERVICE>_CONTAINER` per service.
+- Notifier events: `arr.restarted`, `arr.unreachable_threshold_restart`,
+  `arr.restart_failed` (alongside existing `service.down`).
+
+### Changed
+- `run_arr_services` accepts new keyword-only args (`docker_manager`,
+  `state`, `health_state`, `running_unreachable_threshold`,
+  `restart_cooldown`); the legacy 2-arg form continues to work with
+  log+notify behavior only (no recovery).
+
 ## 0.5.1 — 2026-04-30
 
 ### Fixed

@@ -25,6 +25,7 @@ CATEGORY_MAP = {
 class ArrClient:
     def __init__(self, config: ArrAppConfig):
         self.name = config.name
+        self.container_name = config.effective_container_name
         self._url = config.url
         self._api_key = config.api_key
         self._client = httpx.AsyncClient(timeout=15.0)

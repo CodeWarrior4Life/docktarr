@@ -44,6 +44,18 @@ class ArrAppConfig:
     url: str
     api_key: str
     name: str
+    container_name: str | None = None
+
+    @property
+    def effective_container_name(self) -> str:
+        """Container name to inspect/restart for this service.
+
+        Defaults to ``name.lower()`` (e.g. "Sonarr" -> "sonarr"). Override via
+        ``container_name`` (or per-service env var like ``READARR_CONTAINER``)
+        when the deployed container is named differently — e.g. our
+        Readarr instance runs as ``readarr-audiobooks``.
+        """
+        return self.container_name or self.name.lower()
 
 
 @dataclass(frozen=True)
@@ -98,8 +110,16 @@ class Config:
             app_url = os.environ.get(f"{prefix}_URL", "").strip()
             app_key = os.environ.get(f"{prefix}_API_KEY", "").strip()
             if app_url and app_key:
+                container_override = (
+                    os.environ.get(f"{prefix}_CONTAINER", "").strip() or None
+                )
                 arr_apps.append(
-                    ArrAppConfig(url=app_url.rstrip("/"), api_key=app_key, name=name)
+                    ArrAppConfig(
+                        url=app_url.rstrip("/"),
+                        api_key=app_key,
+                        name=name,
+                        container_name=container_override,
+                    )
                 )
 
         protected_raw = os.environ.get("PROTECTED_CATEGORIES", "MAM").strip()

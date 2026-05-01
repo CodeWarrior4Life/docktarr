@@ -331,12 +331,32 @@ async def _build_scheduler_for_test(
             _disk_health_interval,
         )
 
-    # --- arr_services (ported from arr-orchestrator, T15) ---
+    # --- arr_services + container recovery (consolidation T15; recovery 0.5.2) ---
     if arr_clients:
-        from docktarr.arr_services import run_arr_services
+        from datetime import timedelta as _timedelta
+
+        from docktarr.arr_services import ArrServicesState, run_arr_services
+
+        if docker_mgr is None:
+            docker_mgr = DockerManager()
+        arr_services_state = ArrServicesState()
+        arr_unreachable_threshold = int(
+            os.environ.get("ARR_UNREACHABLE_THRESHOLD", "3")
+        )
+        arr_restart_cooldown = parse_duration(
+            os.environ.get("ARR_RESTART_COOLDOWN", "15m")
+        )
 
         async def _arr_services_job():
-            await run_arr_services(arr_clients, notifier)
+            await run_arr_services(
+                arr_clients,
+                notifier,
+                docker_manager=docker_mgr,
+                state=arr_services_state,
+                health_state=health_state,
+                running_unreachable_threshold=arr_unreachable_threshold,
+                restart_cooldown=arr_restart_cooldown,
+            )
 
         _arr_services_interval = os.environ.get("ARR_SERVICES_INTERVAL", "5m")
         scheduler.add_job(
@@ -346,8 +366,11 @@ async def _build_scheduler_for_test(
             id="arr_services",
         )
         log.info(
-            "arr_services enabled (apps=%s, interval=%s)",
+            "arr_services enabled (apps=%s, containers=%s, threshold=%d, cooldown=%s, interval=%s)",
             list(arr_clients.keys()),
+            {n: c.container_name for n, c in arr_clients.items()},
+            arr_unreachable_threshold,
+            arr_restart_cooldown,
             _arr_services_interval,
         )
 
