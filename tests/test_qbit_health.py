@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from docktarr.docker_manager import ContainerInfo
+from docktarr.http_health import HealthState
 from docktarr.notifier import Notifier
 from docktarr.qbittorrent import QBitClient
-from docktarr.qbit_health import QbitHealthConfig, run_qbit_health
+from docktarr.qbit_health import QbitHealthConfig, QbitHealthState, run_qbit_health
 
 
 # ---------------------------------------------------------------------------
@@ -57,13 +59,29 @@ def _make_container(
     status: str,
     exit_code: int | None,
     name: str = "qbittorrent",
+    started_at: datetime | None = None,
 ) -> ContainerInfo:
     return ContainerInfo(
         name=name,
         status=status,
         image="lscr.io/linuxserver/qbittorrent:latest",
         exit_code=exit_code,
+        started_at=started_at,
     )
+
+
+def _make_docker_multi(containers: dict[str, ContainerInfo]) -> MagicMock:
+    """DockerManager mock that dispatches by container name."""
+    dm = MagicMock()
+
+    async def _get(name: str) -> ContainerInfo:
+        if name not in containers:
+            raise LookupError(f"container {name!r} not found")
+        return containers[name]
+
+    dm.get_container = AsyncMock(side_effect=_get)
+    dm.restart = AsyncMock()
+    return dm
 
 
 def _make_notifier() -> tuple[Notifier, list[dict]]:
@@ -194,3 +212,192 @@ async def test_mam_protected_categories_preserved():
     # QBitClient.get_torrents should never have been called
     # (there's no mock on it, so if it were called it would fail with a real HTTP error)
     assert events[0]["event"] == "qbit.restarted"
+
+
+# ---------------------------------------------------------------------------
+# Stale-namespace detection (gluetun restarted after qbit)
+# ---------------------------------------------------------------------------
+
+
+_BASE = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_stale_namespace_triggers_restart():
+    """qBit unreachable + gluetun.started_at > qbit.started_at -> restart qbit."""
+    qbit_client = _make_qbit_unreachable()
+    qbit_container = _make_container(status="running", exit_code=0, started_at=_BASE)
+    vpn_container = ContainerInfo(
+        name="gluetun",
+        status="running",
+        image="qmcgaw/gluetun:latest",
+        started_at=_BASE + timedelta(minutes=30),
+    )
+    dm = _make_docker_multi({"qbittorrent": qbit_container, "gluetun": vpn_container})
+    notifier, events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent", vpn_container_name="gluetun"
+    )
+
+    await run_qbit_health(qbit_client, dm, notifier, config, state=state)
+
+    dm.restart.assert_awaited_once_with("qbittorrent")
+    assert any(e["event"] == "qbit.stale_namespace_restart" for e in events)
+    assert state.consecutive_unreachable == 0
+
+
+@pytest.mark.asyncio
+async def test_vpn_older_than_qbit_does_not_restart_first_tick():
+    """Gluetun started BEFORE qbit -> not a stale-namespace case; no restart yet."""
+    qbit_client = _make_qbit_unreachable()
+    qbit_container = _make_container(
+        status="running", exit_code=0, started_at=_BASE + timedelta(minutes=30)
+    )
+    vpn_container = ContainerInfo(
+        name="gluetun",
+        status="running",
+        image="qmcgaw/gluetun:latest",
+        started_at=_BASE,
+    )
+    dm = _make_docker_multi({"qbittorrent": qbit_container, "gluetun": vpn_container})
+    notifier, events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent",
+        vpn_container_name="gluetun",
+        running_unreachable_threshold=3,
+    )
+
+    await run_qbit_health(qbit_client, dm, notifier, config, state=state)
+
+    dm.restart.assert_not_called()
+    assert state.consecutive_unreachable == 1
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_consecutive_unreachable_threshold_triggers_restart():
+    """After N consecutive running-but-unreachable ticks, restart even without stale namespace."""
+    qbit_client = _make_qbit_unreachable()
+    qbit_container = _make_container(
+        status="running", exit_code=0, started_at=_BASE + timedelta(minutes=30)
+    )
+    vpn_container = ContainerInfo(
+        name="gluetun",
+        status="running",
+        image="qmcgaw/gluetun:latest",
+        started_at=_BASE,  # older than qbit -> stale-namespace path is N/A
+    )
+    dm = _make_docker_multi({"qbittorrent": qbit_container, "gluetun": vpn_container})
+    notifier, events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent",
+        vpn_container_name="gluetun",
+        running_unreachable_threshold=2,
+    )
+
+    # Tick 1: counter -> 1, no restart
+    await run_qbit_health(qbit_client, dm, notifier, config, state=state)
+    assert state.consecutive_unreachable == 1
+    dm.restart.assert_not_called()
+
+    # Tick 2: counter -> 2 (== threshold), restart
+    await run_qbit_health(qbit_client, dm, notifier, config, state=state)
+    dm.restart.assert_awaited_once_with("qbittorrent")
+    assert any(e["event"] == "qbit.unreachable_threshold_restart" for e in events)
+    assert state.consecutive_unreachable == 0  # reset after restart
+
+
+@pytest.mark.asyncio
+async def test_alive_resets_consecutive_counter():
+    """A successful tick after failures resets the counter."""
+    qbit_unreachable = _make_qbit_unreachable()
+    qbit_alive = _make_qbit(alive=True)
+    qbit_container = _make_container(
+        status="running", exit_code=0, started_at=_BASE + timedelta(minutes=30)
+    )
+    vpn_container = ContainerInfo(
+        name="gluetun",
+        status="running",
+        image="qmcgaw/gluetun:latest",
+        started_at=_BASE,
+    )
+    dm = _make_docker_multi({"qbittorrent": qbit_container, "gluetun": vpn_container})
+    notifier, _events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent",
+        vpn_container_name="gluetun",
+        running_unreachable_threshold=5,
+    )
+
+    await run_qbit_health(qbit_unreachable, dm, notifier, config, state=state)
+    assert state.consecutive_unreachable == 1
+    await run_qbit_health(qbit_alive, dm, notifier, config, state=state)
+    assert state.consecutive_unreachable == 0
+
+
+@pytest.mark.asyncio
+async def test_vpn_container_not_found_falls_back_to_threshold():
+    """If the configured VPN container is not found, fall back to consecutive-failure threshold."""
+    qbit_client = _make_qbit_unreachable()
+    qbit_container = _make_container(status="running", exit_code=0, started_at=_BASE)
+    dm = _make_docker_multi({"qbittorrent": qbit_container})  # no gluetun
+    notifier, _events = _make_notifier()
+    state = QbitHealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent",
+        vpn_container_name="gluetun",
+        running_unreachable_threshold=2,
+    )
+
+    await run_qbit_health(qbit_client, dm, notifier, config, state=state)
+    dm.restart.assert_not_called()
+    assert state.consecutive_unreachable == 1
+
+
+@pytest.mark.asyncio
+async def test_health_state_records_snapshot():
+    """When a HealthState is provided, qbit_health snapshot is published for /health."""
+    qbit_client = _make_qbit_unreachable()
+    qbit_container = _make_container(status="running", exit_code=0, started_at=_BASE)
+    vpn_container = ContainerInfo(
+        name="gluetun",
+        status="running",
+        image="qmcgaw/gluetun:latest",
+        started_at=_BASE + timedelta(minutes=30),
+    )
+    dm = _make_docker_multi({"qbittorrent": qbit_container, "gluetun": vpn_container})
+    notifier, _events = _make_notifier()
+    state = QbitHealthState()
+    health_state = HealthState()
+    config = QbitHealthConfig(
+        container_name="qbittorrent", vpn_container_name="gluetun"
+    )
+
+    await run_qbit_health(
+        qbit_client, dm, notifier, config, state=state, health_state=health_state
+    )
+
+    snap = health_state.qbit_health
+    assert snap is not None
+    assert snap["reachable"] is False
+    assert snap["container_status"] == "running"
+    assert snap["stale_namespace_detected"] is True
+    assert snap["last_action"] == "stale_namespace_restart"
+    assert "last_check" in snap
+
+
+@pytest.mark.asyncio
+async def test_health_state_appears_in_snapshot():
+    """HealthState.snapshot() includes qbit_health when set."""
+    health_state = HealthState()
+    snap = health_state.snapshot()
+    assert "qbit_health" in snap
+    assert snap["qbit_health"] is None  # no tick yet
+
+    health_state.record_qbit_health({"reachable": True, "last_action": "ok"})
+    snap2 = health_state.snapshot()
+    assert snap2["qbit_health"] == {"reachable": True, "last_action": "ok"}

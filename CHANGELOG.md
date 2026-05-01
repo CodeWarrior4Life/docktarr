@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.1 — 2026-04-30
+
+### Fixed
+- **qbit_health: stale gluetun namespace recovery.** When gluetun restarted (e.g.
+  Watchtower image update) but qBit's container kept running, qBit's network
+  namespace would silently break — its API became unreachable while Docker still
+  reported the container healthy. The previous logic explicitly returned with no
+  action ("may be mid-startup — will re-check next tick") so the arr stack
+  stayed broken until manual intervention. qbit_health now compares
+  `gluetun.started_at` vs `qbittorrent.started_at`; if the VPN is newer, the
+  namespace is stale and qBit is restarted with a `qbit.stale_namespace_restart`
+  event.
+- **qbit_health: consecutive-unreachable threshold.** Safety net for cases the
+  namespace comparison can't decide (VPN container missing, missing timestamps,
+  clock skew). After N consecutive "running but unreachable" ticks (default 2 →
+  ~10 min at the default 5-min interval), qbit_health restarts qBit with a
+  `qbit.unreachable_threshold_restart` event. Tunable via
+  `QBIT_HEALTH_UNREACHABLE_THRESHOLD`.
+
+### Added
+- `ContainerInfo.started_at: datetime | None` parsed from Docker
+  `State.StartedAt`.
+- `QbitHealthState` dataclass — per-instance counter persisted across scheduler
+  ticks.
+- `QbitHealthConfig.vpn_container_name` (default `"gluetun"`) and
+  `running_unreachable_threshold` (default `2`).
+- `/health/qbit` endpoint and `qbit_health` field on the main `/health`
+  snapshot. Surfaces last-tick reachability, container status, both
+  `started_at` timestamps, whether stale-namespace was detected, the
+  consecutive-unreachable counter, and the last action taken.
+- New env vars: `QBIT_VPN_CONTAINER`, `QBIT_HEALTH_UNREACHABLE_THRESHOLD`.
+- Notifier events: `qbit.stale_namespace_restart`,
+  `qbit.unreachable_threshold_restart`.
+
+### Changed
+- Startup banner now logs the actual installed version
+  (`importlib.metadata.version("docktarr")`) instead of the hardcoded
+  `Doctarr v0.2.0 starting` string.
+
 ## 0.5.0 — 2026-04-30
 
 ### Renamed

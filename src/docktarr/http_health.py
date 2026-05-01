@@ -14,6 +14,7 @@ class HealthState:
     hw: dict[str, list[dict]] = field(default_factory=dict)
     audit: list[dict] = field(default_factory=list)
     permissions: list[dict] = field(default_factory=list)
+    qbit_health: dict | None = None
 
     def record_hw(self, by_host: dict[str, list[dict]]) -> None:
         self.hw = by_host
@@ -27,11 +28,15 @@ class HealthState:
             for f in findings
         ]
 
+    def record_qbit_health(self, snapshot: dict) -> None:
+        self.qbit_health = snapshot
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hw_capability": self.hw,
             "media_container_audit": self.audit,
             "permissions": self.permissions,
+            "qbit_health": self.qbit_health,
         }
 
 
@@ -51,6 +56,7 @@ class HealthServer:
         app.router.add_get("/health/hw_capability", self._hw)
         app.router.add_get("/health/audit", self._audit)
         app.router.add_get("/health/permissions", self._perms)
+        app.router.add_get("/health/qbit", self._qbit)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self._host, self._port)
@@ -73,3 +79,6 @@ class HealthServer:
 
     async def _perms(self, req):
         return web.json_response(self._state.permissions)
+
+    async def _qbit(self, req):
+        return web.json_response(self._state.qbit_health)

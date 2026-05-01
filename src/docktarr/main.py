@@ -73,7 +73,9 @@ async def _build_scheduler_for_test(
 
     if skip_network:
         tag_id = 0
-        log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile")
+        log.info(
+            "DOCKTARR_SKIP_NETWORK_INIT: skipping prowlarr.ensure_tag + _reconcile"
+        )
     else:
         # Ensure docktarr tag exists
         tag_id = await prowlarr.ensure_tag("docktarr")
@@ -204,20 +206,40 @@ async def _build_scheduler_for_test(
                 config.imposter_backfill_interval,
             )
 
-    # --- qbit_health (ported from arr-orchestrator, T13) ---
+    # --- qbit_health (ported from arr-orchestrator, T13; stale-namespace fix v0.5.1) ---
     docker_mgr: DockerManager | None = None
     if config.qbit_url and config.qbit_username and config.qbit_password and qbit:
-        from docktarr.qbit_health import run_qbit_health, QbitHealthConfig
+        from docktarr.qbit_health import (
+            QbitHealthConfig,
+            QbitHealthState,
+            run_qbit_health,
+        )
 
         qbit_container = os.environ.get("QBITTORRENT_CONTAINER", "qbittorrent").strip()
+        qbit_vpn_container = (
+            os.environ.get("QBIT_VPN_CONTAINER", "gluetun").strip() or None
+        )
+        qbit_unreachable_threshold = int(
+            os.environ.get("QBIT_HEALTH_UNREACHABLE_THRESHOLD", "2")
+        )
         qbit_health_cfg = QbitHealthConfig(
             container_name=qbit_container,
             protected_categories=config.protected_categories,
+            vpn_container_name=qbit_vpn_container,
+            running_unreachable_threshold=qbit_unreachable_threshold,
         )
+        qbit_health_state = QbitHealthState()
         docker_mgr = DockerManager()
 
         async def _qbit_health_job():
-            await run_qbit_health(qbit, docker_mgr, notifier, qbit_health_cfg)
+            await run_qbit_health(
+                qbit,
+                docker_mgr,
+                notifier,
+                qbit_health_cfg,
+                state=qbit_health_state,
+                health_state=health_state,
+            )
 
         _qbit_health_interval = os.environ.get("QBIT_HEALTH_INTERVAL", "5m")
         scheduler.add_job(
@@ -227,8 +249,10 @@ async def _build_scheduler_for_test(
             id="qbit_health",
         )
         log.info(
-            "qbit_health enabled (container=%s, interval=%s)",
+            "qbit_health enabled (container=%s, vpn=%s, threshold=%d, interval=%s)",
             qbit_container,
+            qbit_vpn_container,
+            qbit_unreachable_threshold,
             _qbit_health_interval,
         )
 
@@ -496,7 +520,13 @@ async def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    log.info("Doctarr v0.2.0 starting (prowlarr=%s)", config.prowlarr_url)
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        _ver = _pkg_version("docktarr")
+    except PackageNotFoundError:
+        _ver = "unknown"
+    log.info("Docktarr v%s starting (prowlarr=%s)", _ver, config.prowlarr_url)
 
     # Build scheduler and all components (skips network if DOCKTARR_SKIP_NETWORK_INIT=1)
     (
