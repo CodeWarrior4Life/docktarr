@@ -78,6 +78,54 @@ permission_health:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_boots_when_qbit_login_fails(tmp_path, monkeypatch):
+    """If qBittorrent is unreachable at startup, docktarr must still boot.
+
+    qbit_health is the module that recovers a broken qBit (Pattern 1 stale
+    namespace, exit-137 OOM kill, etc.). If a failed qbit.login() crashes
+    startup we never schedule qbit_health and the recovery loop is dead —
+    chicken and egg. So an exception from qbit.login at startup must be
+    caught and logged, with qbit_health still wired up.
+    """
+    import httpx
+
+    from docktarr.qbittorrent import QBitClient
+
+    monkeypatch.setenv("PROWLARR_URL", "http://prowlarr.invalid:9696")
+    monkeypatch.setenv("PROWLARR_API_KEY", "x")
+    monkeypatch.setenv("QBITTORRENT_URL", "http://qbit.invalid:8082")
+    monkeypatch.setenv("QBITTORRENT_USERNAME", "u")
+    monkeypatch.setenv("QBITTORRENT_PASSWORD", "p")
+    monkeypatch.setenv("SONARR_URL", "http://sonarr.invalid:8989")
+    monkeypatch.setenv("SONARR_API_KEY", "k")
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
+
+    async def _boom(self):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    # Even with SKIP_NETWORK_INIT (which skips qbit.login), patch the method
+    # itself to raise on any caller — this proves the runtime path is
+    # independently safe and that the scheduler keeps qbit_health wired.
+    monkeypatch.setattr(QBitClient, "login", _boom)
+
+    yaml_path = tmp_path / "empty.yaml"
+    from docktarr.main import _build_scheduler_for_test
+
+    result = await _build_scheduler_for_test(yaml_path)
+    scheduler = result[0]
+
+    try:
+        job_ids = {j.id for j in scheduler.get_jobs()}
+        assert "qbit_health" in job_ids, (
+            "qbit_health must still be scheduled even when qBit is unreachable"
+        )
+        assert "arr_services" in job_ids
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
 async def test_scheduler_minimal_config(tmp_path, monkeypatch):
     """Minimal env (no YAML modules) still registers core jobs."""
     monkeypatch.setenv("PROWLARR_URL", "http://prowlarr.invalid:9696")

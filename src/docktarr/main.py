@@ -136,8 +136,19 @@ async def _build_scheduler_for_test(
         if skip_network:
             log.info("DOCKTARR_SKIP_NETWORK_INIT: skipping qbit.login()")
         else:
-            await qbit.login()
-            log.info("qBittorrent connected at %s", config.qbit_url)
+            try:
+                await qbit.login()
+                log.info("qBittorrent connected at %s", config.qbit_url)
+            except Exception as exc:
+                # Don't let an unreachable qBit crash startup — qbit_health is
+                # the very module that knows how to recover qBit (Pattern 1
+                # exit-137, stale gluetun namespace, etc.). If we abort here we
+                # never schedule qbit_health and the recovery loop is dead.
+                log.warning(
+                    "qBittorrent unreachable at startup (%s) — continuing; "
+                    "qbit_health will probe and recover when qBit is back",
+                    exc,
+                )
 
         for app_config in config.arr_apps:
             arr_clients[app_config.name] = ArrClient(app_config)

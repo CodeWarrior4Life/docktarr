@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.3 — 2026-05-01
+
+### Fixed
+- **Startup chicken-and-egg with broken qBit.** If `qbit.login()` raised at
+  startup (qBit container in restart-loop, gluetun namespace stale, etc.),
+  docktarr crashed with exit 1 before the scheduler started — meaning
+  `qbit_health`, the very module designed to recover qBit, never ran. Caught
+  in production while deploying 0.5.2 over an existing Pattern 1 outage.
+  Now wraps `qbit.login()` in try/except and logs a warning; `qbit_health`
+  is wired up and probes/restarts qBit on its normal cadence regardless.
+
 ## 0.5.2 — 2026-05-01
 
 ### Fixed
