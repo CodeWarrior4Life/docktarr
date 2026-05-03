@@ -40,6 +40,14 @@ _TEMPLATES = {
         "**[Docktarr]** mount_audit: {service} [{container}] — `{path}` is **{kind}** "
         "(role={role}). fix={fix_result}"
     ),
+    "service.slow_threshold_restart": (
+        "**[Docktarr]** {name} container **{container_name}** restarted: HTTP listener "
+        "slow for {consecutive_ticks} consecutive ticks (latency={latency_ms}ms, "
+        "threshold={threshold_ms}ms, last_status={http_status})"
+    ),
+    "service.slow_restart_failed": (
+        "**[Docktarr]** {name} restart FAILED (latency={latency_ms}ms): {error}"
+    ),
 }
 
 

@@ -17,6 +17,7 @@ class HealthState:
     qbit_health: dict | None = None
     arr_services: list[dict] = field(default_factory=list)
     mount_audit: dict | None = None
+    service_responsiveness: list[dict] = field(default_factory=list)
 
     def record_hw(self, by_host: dict[str, list[dict]]) -> None:
         self.hw = by_host
@@ -39,6 +40,9 @@ class HealthState:
     def record_mount_audit(self, summary: dict) -> None:
         self.mount_audit = summary
 
+    def record_service_responsiveness(self, results: list[dict]) -> None:
+        self.service_responsiveness = results
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hw_capability": self.hw,
@@ -47,6 +51,7 @@ class HealthState:
             "qbit_health": self.qbit_health,
             "arr_services": self.arr_services,
             "mount_audit": self.mount_audit,
+            "service_responsiveness": self.service_responsiveness,
         }
 
 

@@ -443,6 +443,53 @@ async def _build_scheduler_for_test(
             list(arr_clients.keys()),
         )
 
+    # --- service_responsiveness (S107 2026-05-03) ---
+    # Catches the class of bug where a container is "running" + "healthy" but
+    # its HTTP listener has become unresponsive. Probes arbitrary URLs, measures
+    # latency, restarts on sustained slowness. Configured via SERVICE_PROBES env
+    # (DSL: 'name,url,container,slow_ms,consecutive;...'). Disabled if empty.
+    raw_probes = os.environ.get("SERVICE_PROBES", "").strip()
+    if raw_probes:
+        from docktarr.service_responsiveness import (
+            ServiceProbeState,
+            parse_probes_env,
+            run_service_responsiveness,
+        )
+
+        probes = parse_probes_env(raw_probes)
+        if probes:
+            if docker_mgr is None:
+                docker_mgr = DockerManager()
+            sr_state: dict[str, ServiceProbeState] = {}
+            sr_interval = os.environ.get("SERVICE_PROBES_INTERVAL", "5m")
+            sr_cooldown = parse_duration(
+                os.environ.get("SERVICE_PROBES_RESTART_COOLDOWN", "15m")
+            )
+
+            async def _service_responsiveness_job():
+                await run_service_responsiveness(
+                    probes,
+                    docker_mgr,
+                    notifier,
+                    state=sr_state,
+                    health_state=health_state,
+                    restart_cooldown=sr_cooldown,
+                )
+
+            scheduler.add_job(
+                _service_responsiveness_job,
+                "interval",
+                seconds=parse_duration(sr_interval).total_seconds(),
+                id="service_responsiveness",
+                next_run_time=datetime.now(timezone.utc),
+            )
+            log.info(
+                "service_responsiveness enabled (probes=%d, interval=%s, cooldown=%s)",
+                len(probes),
+                sr_interval,
+                sr_cooldown,
+            )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(
