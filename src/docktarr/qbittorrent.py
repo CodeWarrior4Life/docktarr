@@ -23,9 +23,14 @@ class QBitClient:
             data={"username": self._username, "password": self._password},
         )
         resp.raise_for_status()
-        self._sid = resp.cookies.get("SID")
-        if not self._sid:
+        # qBit only issues a Set-Cookie on a NEW session. When this client has
+        # already established a session via the httpx cookie jar, qBit returns
+        # 200 Ok without Set-Cookie. resp.cookies is empty in that case, but
+        # self._client.cookies still holds the live SID. Fall through.
+        sid = resp.cookies.get("SID") or self._client.cookies.get("SID") or self._sid
+        if not sid:
             raise RuntimeError("qBittorrent login failed: no SID cookie")
+        self._sid = sid
         log.debug("qBit login OK")
 
     def _cookies(self) -> dict[str, str]:
