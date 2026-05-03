@@ -622,7 +622,7 @@ async def main() -> None:
         await plex_client.close()
     if vpn_http is not None:
         await vpn_http.aclose()
-    log.info("Doctarr stopped")
+    log.info("Docktarr stopped")
 
 
 async def _reconcile(prowlarr: ProwlarrClient, state: StateStore, tag_id: int) -> None:
