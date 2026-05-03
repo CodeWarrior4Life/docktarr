@@ -65,10 +65,14 @@ _DEFAULT_COOLDOWN = timedelta(minutes=15)
 @dataclass(frozen=True)
 class ServiceProbeConfig:
     name: str
-    url: str
+    url: str  # internal probe — what the app sees from inside docker network
     container_name: str
     slow_ms: int = _DEFAULT_SLOW_MS
     consecutive_threshold: int = _DEFAULT_CONSECUTIVE
+    external_url: str | None = None  # optional — what the public Caddy route looks like
+    external_proxy_container: str | None = (
+        None  # what to restart on ARP-staleness pattern
+    )
 
 
 @dataclass
@@ -77,6 +81,11 @@ class ServiceProbeState:
     last_restart_attempt: datetime | None = None
     last_latency_ms: int | None = None
     last_status: int | None = None
+    # External-route tracking (S107 ARP-staleness detection)
+    external_consecutive_slow: int = 0
+    last_external_restart_attempt: datetime | None = None
+    last_external_latency_ms: int | None = None
+    last_external_status: int | None = None
 
 
 def parse_probes_env(raw: str) -> list[ServiceProbeConfig]:
@@ -102,6 +111,8 @@ def parse_probes_env(raw: str) -> list[ServiceProbeConfig]:
         name, url, container = parts[0], parts[1], parts[2]
         slow_ms = _DEFAULT_SLOW_MS
         consecutive = _DEFAULT_CONSECUTIVE
+        external_url: str | None = None
+        external_proxy: str | None = None
         try:
             if len(parts) >= 4 and parts[3]:
                 slow_ms = int(parts[3])
@@ -111,6 +122,10 @@ def parse_probes_env(raw: str) -> list[ServiceProbeConfig]:
             log.warning(
                 "SERVICE_PROBES: %s has non-integer threshold, using defaults", name
             )
+        if len(parts) >= 6 and parts[5]:
+            external_url = parts[5]
+        if len(parts) >= 7 and parts[6]:
+            external_proxy = parts[6]
         out.append(
             ServiceProbeConfig(
                 name=name,
@@ -118,6 +133,8 @@ def parse_probes_env(raw: str) -> list[ServiceProbeConfig]:
                 container_name=container,
                 slow_ms=slow_ms,
                 consecutive_threshold=consecutive,
+                external_url=external_url,
+                external_proxy_container=external_proxy,
             )
         )
     return out
@@ -255,6 +272,185 @@ async def _probe_one(
     return base
 
 
+async def _probe_external_route(
+    client: httpx.AsyncClient,
+    probe: ServiceProbeConfig,
+    state: ServiceProbeState,
+    internal_was_ok: bool,
+    docker_manager: DockerManager,
+    notifier: Notifier,
+    now: datetime,
+    cooldown: timedelta,
+) -> dict[str, Any]:
+    """Probe the public Caddy-fronted route and detect host-bridge ARP staleness.
+
+    The unique signature of stale-ARP-on-host (S107 2026-05-03) is:
+    internal docker-DNS probe is FAST (the app is fine), but the external
+    route through Caddy times out or 5xx's (Caddy on ``--network host`` can't
+    reach the docker bridge IPs because the host's neighbor table holds dead
+    MAC entries from container churn).
+
+    When that pattern repeats for ``consecutive_threshold`` ticks, we restart
+    ``external_proxy_container`` (typically Caddy). Caddy's restart re-resolves
+    upstream DNS and refreshes its connection pool, side-stepping the stale
+    ARP. (A more aggressive fix is ``ip neigh flush all`` on the host, but
+    that requires privileged host-net access we don't grant by default.)
+    """
+    assert probe.external_url is not None
+    timeout = max(probe.slow_ms / 1000.0 * 2, 10.0)
+    latency_ms: int | None = None
+    status: int | None = None
+    error: str | None = None
+    slow = False
+
+    t0 = time.perf_counter()
+    try:
+        resp = await client.get(probe.external_url, timeout=timeout)
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        status = resp.status_code
+        slow = latency_ms >= probe.slow_ms or status >= 500
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        error = f"{type(exc).__name__}: {exc}"[:200]
+        slow = True
+    except Exception as exc:  # noqa: BLE001
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        error = f"{type(exc).__name__}: {exc}"[:200]
+        slow = True
+
+    state.last_external_latency_ms = latency_ms
+    state.last_external_status = status
+
+    base: dict[str, Any] = {
+        "name": probe.name,
+        "url": probe.external_url,
+        "role": "external",
+        "container": probe.external_proxy_container,
+        "latency_ms": latency_ms,
+        "http_status": status,
+        "error": error,
+        "slow_ms_threshold": probe.slow_ms,
+        "consecutive_slow": state.external_consecutive_slow,
+        "consecutive_threshold": probe.consecutive_threshold,
+        "internal_was_ok": internal_was_ok,
+        "last_action": None,
+    }
+
+    if not slow:
+        if state.external_consecutive_slow:
+            log.info(
+                "%s external route recovered after %d slow tick(s) (latency=%dms)",
+                probe.name,
+                state.external_consecutive_slow,
+                latency_ms,
+            )
+        state.external_consecutive_slow = 0
+        base["last_action"] = "ok"
+        base["consecutive_slow"] = 0
+        return base
+
+    state.external_consecutive_slow += 1
+    base["consecutive_slow"] = state.external_consecutive_slow
+    is_arp_signature = internal_was_ok  # internal fine + external bad
+    log.warning(
+        "%s external route slow: latency=%dms status=%s err=%s (%d/%d) %s",
+        probe.name,
+        latency_ms,
+        status,
+        error,
+        state.external_consecutive_slow,
+        probe.consecutive_threshold,
+        "[ARP-STALENESS SIGNATURE]" if is_arp_signature else "[upstream-slow]",
+    )
+
+    if state.external_consecutive_slow < probe.consecutive_threshold:
+        base["last_action"] = "external_slow_observed"
+        return base
+
+    # Threshold breached. If internal is ALSO slow, the upstream itself is the
+    # problem and the internal probe will restart it — don't double-act here.
+    if not internal_was_ok:
+        base["last_action"] = "skip_upstream_will_handle"
+        return base
+
+    # Internal OK + external slow = ARP staleness or proxy issue. Restart the
+    # proxy container if configured.
+    if not probe.external_proxy_container:
+        base["last_action"] = "external_route_degraded_no_proxy_configured"
+        await notifier.emit(
+            "service.external_route_degraded",
+            {
+                "name": probe.name,
+                "container_name": probe.container_name,
+                "latency_ms": latency_ms,
+                "http_status": status,
+                "consecutive_ticks": state.external_consecutive_slow,
+                "diagnosis": (
+                    "internal probe OK + external route failing; likely host-bridge "
+                    "ARP staleness or Caddy upstream pool. No external_proxy_container "
+                    "configured for auto-restart."
+                ),
+            },
+        )
+        return base
+
+    if (
+        state.last_external_restart_attempt
+        and (now - state.last_external_restart_attempt) < cooldown
+    ):
+        base["last_action"] = "cooldown_external"
+        return base
+
+    state.last_external_restart_attempt = now
+    try:
+        await docker_manager.restart(probe.external_proxy_container)
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "service_responsiveness: restart of proxy %r for %s FAILED: %s",
+            probe.external_proxy_container,
+            probe.name,
+            exc,
+        )
+        await notifier.emit(
+            "service.external_route_restart_failed",
+            {
+                "name": probe.name,
+                "proxy_container": probe.external_proxy_container,
+                "latency_ms": latency_ms,
+                "error": str(exc)[:200],
+            },
+        )
+        base["last_action"] = "external_restart_failed"
+        return base
+
+    log.warning(
+        "service_responsiveness: ARP-staleness signature detected for %s — "
+        "restarted proxy %r (external latency=%dms while internal was OK)",
+        probe.name,
+        probe.external_proxy_container,
+        latency_ms,
+    )
+    await notifier.emit(
+        "service.external_route_degraded",
+        {
+            "name": probe.name,
+            "container_name": probe.container_name,
+            "proxy_container": probe.external_proxy_container,
+            "latency_ms": latency_ms,
+            "http_status": status,
+            "consecutive_ticks": state.external_consecutive_slow,
+            "diagnosis": (
+                "internal probe OK + external route failing → likely host-bridge "
+                "ARP staleness. Restarted proxy container to refresh upstream pool."
+            ),
+        },
+    )
+    state.external_consecutive_slow = 0
+    base["last_action"] = "external_proxy_restart"
+    base["consecutive_slow"] = 0
+    return base
+
+
 async def run_service_responsiveness(
     probes: list[ServiceProbeConfig],
     docker_manager: DockerManager,
@@ -264,7 +460,7 @@ async def run_service_responsiveness(
     health_state: "HealthState | None" = None,
     restart_cooldown: timedelta = _DEFAULT_COOLDOWN,
 ) -> list[dict[str, Any]]:
-    """Run a single sweep of all probes."""
+    """Run a single sweep of all probes (internal + optional external)."""
     if state is None:
         state = {}
 
@@ -274,23 +470,18 @@ async def run_service_responsiveness(
         for probe in probes:
             ps = state.setdefault(probe.name, ServiceProbeState())
             try:
-                results.append(
-                    await _probe_one(
-                        client,
-                        probe,
-                        ps,
-                        docker_manager,
-                        notifier,
-                        now,
-                        restart_cooldown,
-                    )
+                internal_result = await _probe_one(
+                    client, probe, ps, docker_manager, notifier, now, restart_cooldown
                 )
+                internal_result["role"] = "internal"
+                results.append(internal_result)
             except Exception as exc:  # noqa: BLE001
-                log.exception("probe %s crashed: %s", probe.name, exc)
+                log.exception("internal probe %s crashed: %s", probe.name, exc)
                 results.append(
                     {
                         "name": probe.name,
                         "url": probe.url,
+                        "role": "internal",
                         "container": probe.container_name,
                         "latency_ms": None,
                         "http_status": None,
@@ -298,6 +489,36 @@ async def run_service_responsiveness(
                         "last_action": "probe_crashed",
                     }
                 )
+                continue
+
+            if probe.external_url:
+                internal_was_ok = internal_result.get("last_action") == "ok"
+                try:
+                    results.append(
+                        await _probe_external_route(
+                            client,
+                            probe,
+                            ps,
+                            internal_was_ok,
+                            docker_manager,
+                            notifier,
+                            now,
+                            restart_cooldown,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("external probe %s crashed: %s", probe.name, exc)
+                    results.append(
+                        {
+                            "name": probe.name,
+                            "url": probe.external_url,
+                            "role": "external",
+                            "latency_ms": None,
+                            "http_status": None,
+                            "error": f"probe crashed: {exc}",
+                            "last_action": "probe_crashed",
+                        }
+                    )
 
     if health_state is not None and hasattr(
         health_state, "record_service_responsiveness"

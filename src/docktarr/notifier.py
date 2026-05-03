@@ -48,6 +48,14 @@ _TEMPLATES = {
     "service.slow_restart_failed": (
         "**[Docktarr]** {name} restart FAILED (latency={latency_ms}ms): {error}"
     ),
+    "service.external_route_degraded": (
+        "**[Docktarr]** {name} EXTERNAL ROUTE degraded (proxy={proxy_container}): "
+        "external latency={latency_ms}ms status={http_status} after {consecutive_ticks} "
+        "tick(s). {diagnosis}"
+    ),
+    "service.external_route_restart_failed": (
+        "**[Docktarr]** {name} proxy ({proxy_container}) restart FAILED: {error}"
+    ),
 }
 
 

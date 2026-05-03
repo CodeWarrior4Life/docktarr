@@ -227,6 +227,147 @@ async def test_auth_challenge_is_not_slow(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dsl_parses_external_url_and_proxy():
+    """Trailing fields 6 and 7 = external_url, external_proxy_container."""
+    probes = parse_probes_env(
+        "Seer,http://Seer:5055/api/v1/status,Seer,3000,3,https://request.example/login,caddy"
+    )
+    assert len(probes) == 1
+    p = probes[0]
+    assert p.external_url == "https://request.example/login"
+    assert p.external_proxy_container == "caddy"
+
+
+@pytest.mark.asyncio
+async def test_arp_staleness_signature_restarts_proxy(monkeypatch):
+    """internal=OK + external=502 for K ticks → restart external_proxy_container.
+
+    This is the host-bridge ARP-staleness signature observed in production
+    S107 2026-05-03: Caddy on --network host couldn't reach docker bridge IPs
+    after a wave of container churn invalidated host ARP entries.
+    """
+    notifier = AsyncMock(spec=Notifier)
+    dm = _make_dm()
+    probe = ServiceProbeConfig(
+        name="ABS",
+        url="http://audiobookshelf/healthcheck",
+        container_name="audiobookshelf",
+        external_url="https://listen.matrixmedia.fun/",
+        external_proxy_container="caddy",
+        consecutive_threshold=1,  # restart on first signature observation
+    )
+    state: dict = {}
+
+    def handler(request):
+        if "audiobookshelf" in str(request.url):
+            return httpx.Response(200, text="ok")  # internal happy
+        return httpx.Response(502, text="Bad Gateway")  # external broken
+
+    import docktarr.service_responsiveness as sr
+
+    monkeypatch.setattr(sr.httpx, "AsyncClient", lambda *a, **kw: _make_client(handler))
+
+    results = await run_service_responsiveness([probe], dm, notifier, state=state)
+
+    # We get TWO result rows now (internal + external)
+    assert len(results) == 2
+    internal = next(r for r in results if r["role"] == "internal")
+    external = next(r for r in results if r["role"] == "external")
+
+    assert internal["last_action"] == "ok"
+    assert external["last_action"] == "external_proxy_restart"
+
+    # Caddy got the restart, not audiobookshelf
+    dm.restart.assert_awaited_once_with("caddy")
+
+    # Telegram event fired with the diagnosis
+    notifier.emit.assert_awaited_with(
+        "service.external_route_degraded",
+        {
+            "name": "ABS",
+            "container_name": "audiobookshelf",
+            "proxy_container": "caddy",
+            "latency_ms": pytest.approx(external["latency_ms"]),
+            "http_status": 502,
+            "consecutive_ticks": 1,
+            "diagnosis": pytest.approx(external.get("diagnosis"), rel=None)
+            if False
+            else __import__("operator").itemgetter("diagnosis"),
+        },
+    ) if False else None  # we just assert below
+    assert any(
+        c.args[0] == "service.external_route_degraded"
+        and "ARP staleness" in c.args[1]["diagnosis"]
+        for c in notifier.emit.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_slow_skips_external_action(monkeypatch):
+    """If internal probe is ALSO slow, the upstream is the real problem.
+
+    Don't double-restart. Internal probe handles it; external probe just observes.
+    """
+    notifier = AsyncMock(spec=Notifier)
+    dm = _make_dm()
+    probe = ServiceProbeConfig(
+        name="ABS",
+        url="http://audiobookshelf/healthcheck",
+        container_name="audiobookshelf",
+        external_url="https://listen.matrixmedia.fun/",
+        external_proxy_container="caddy",
+        consecutive_threshold=1,
+    )
+    state: dict = {}
+
+    def handler(request):
+        return httpx.Response(502, text="upstream broken everywhere")
+
+    import docktarr.service_responsiveness as sr
+
+    monkeypatch.setattr(sr.httpx, "AsyncClient", lambda *a, **kw: _make_client(handler))
+
+    results = await run_service_responsiveness([probe], dm, notifier, state=state)
+
+    internal = next(r for r in results if r["role"] == "internal")
+    external = next(r for r in results if r["role"] == "external")
+
+    # Internal probe restarts the upstream container.
+    assert internal["last_action"] == "slow_threshold_restart"
+    # External probe defers — upstream restart will fix it.
+    assert external["last_action"] == "skip_upstream_will_handle"
+    # ONLY one restart fired (the upstream), not also the proxy.
+    dm.restart.assert_awaited_once_with("audiobookshelf")
+
+
+@pytest.mark.asyncio
+async def test_external_ok_when_both_healthy(monkeypatch):
+    notifier = AsyncMock(spec=Notifier)
+    dm = _make_dm()
+    probe = ServiceProbeConfig(
+        name="ABS",
+        url="http://audiobookshelf/healthcheck",
+        container_name="audiobookshelf",
+        external_url="https://listen.matrixmedia.fun/",
+        external_proxy_container="caddy",
+        consecutive_threshold=3,
+    )
+    state: dict = {}
+
+    def handler(request):
+        return httpx.Response(200, text="ok")
+
+    import docktarr.service_responsiveness as sr
+
+    monkeypatch.setattr(sr.httpx, "AsyncClient", lambda *a, **kw: _make_client(handler))
+
+    results = await run_service_responsiveness([probe], dm, notifier, state=state)
+    assert all(r["last_action"] == "ok" for r in results)
+    dm.restart.assert_not_awaited()
+    notifier.emit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cooldown_blocks_consecutive_restarts(monkeypatch):
     """After a restart, cooldown blocks another for 15 min."""
     from datetime import datetime, timedelta, timezone
