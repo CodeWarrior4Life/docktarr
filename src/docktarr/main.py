@@ -389,6 +389,60 @@ async def _build_scheduler_for_test(
             _arr_services_interval,
         )
 
+    # --- mount_audit (S107 2026-05-03) ---
+    # Catches the class of bug where an app's configured save/library path
+    # (qBit save_path, Sonarr/Radarr root folder, etc.) doesn't actually
+    # exist or isn't writable inside the container — e.g. an empty bind
+    # overlay hiding the real subdirs. Auto-fixes missing dirs via
+    # in-container ``mkdir -p``; emits a ``mount_audit.issue`` event for
+    # everything else (Telegram + webhook).
+    mount_audit_enabled = (
+        os.environ.get("MOUNT_AUDIT_ENABLED", "true").strip().lower() == "true"
+    )
+    if mount_audit_enabled and (qbit or arr_clients):
+        from docktarr.mount_audit import run_mount_audit
+
+        if docker_mgr is None:
+            docker_mgr = DockerManager()
+
+        mount_audit_auto_fix = (
+            os.environ.get("MOUNT_AUDIT_AUTO_FIX", "true").strip().lower() == "true"
+        )
+        mount_audit_qbit_container = os.environ.get(
+            "QBITTORRENT_CONTAINER", "qbittorrent"
+        ).strip()
+        mount_audit_interval = os.environ.get("MOUNT_AUDIT_INTERVAL", "6h")
+
+        def _arr_containers_map() -> dict[str, str]:
+            return {n: c.container_name for n, c in arr_clients.items()}
+
+        async def _mount_audit_job():
+            await run_mount_audit(
+                qbit=qbit,
+                qbit_container=mount_audit_qbit_container if qbit else None,
+                arr_clients=arr_clients,
+                arr_containers=_arr_containers_map(),
+                docker_manager=docker_mgr,
+                notifier=notifier,
+                health_state=health_state,
+                auto_fix=mount_audit_auto_fix,
+            )
+
+        scheduler.add_job(
+            _mount_audit_job,
+            "interval",
+            seconds=parse_duration(mount_audit_interval).total_seconds(),
+            id="mount_audit",
+            next_run_time=datetime.now(timezone.utc),  # run once on startup
+        )
+        log.info(
+            "mount_audit enabled (auto_fix=%s, interval=%s, qbit_container=%s, arr_apps=%s)",
+            mount_audit_auto_fix,
+            mount_audit_interval,
+            mount_audit_qbit_container,
+            list(arr_clients.keys()),
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

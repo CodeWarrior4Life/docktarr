@@ -90,3 +90,33 @@ class DockerManager:
             self._client.containers.get(name).stop()
 
         await asyncio.to_thread(_stop)
+
+    async def exec_run(
+        self,
+        name: str,
+        cmd: list[str] | str,
+        *,
+        user: str | None = None,
+        timeout: float = 30.0,
+    ) -> tuple[int, str]:
+        """Run a command inside a running container; return (exit_code, output)."""
+
+        def _exec():
+            c = self._client.containers.get(name)
+            kwargs = {"demux": False, "stderr": True, "stdout": True}
+            if user is not None:
+                kwargs["user"] = user
+            res = c.exec_run(cmd, **kwargs)
+            output = res.output.decode("utf-8", errors="replace") if res.output else ""
+            return res.exit_code, output
+
+        return await asyncio.wait_for(asyncio.to_thread(_exec), timeout=timeout)
+
+    async def list_mounts(self, name: str) -> list[dict]:
+        """Return the container's bind mounts as a list of dicts."""
+
+        def _inspect():
+            c = self._client.containers.get(name)
+            return c.attrs.get("Mounts") or []
+
+        return await asyncio.to_thread(_inspect)
