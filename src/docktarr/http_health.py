@@ -18,6 +18,7 @@ class HealthState:
     arr_services: list[dict] = field(default_factory=list)
     mount_audit: dict | None = None
     service_responsiveness: list[dict] = field(default_factory=list)
+    plex_throttle: dict | None = None
 
     def record_hw(self, by_host: dict[str, list[dict]]) -> None:
         self.hw = by_host
@@ -43,6 +44,9 @@ class HealthState:
     def record_service_responsiveness(self, results: list[dict]) -> None:
         self.service_responsiveness = results
 
+    def record_plex_throttle(self, snapshot: dict) -> None:
+        self.plex_throttle = snapshot
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hw_capability": self.hw,
@@ -52,6 +56,7 @@ class HealthState:
             "arr_services": self.arr_services,
             "mount_audit": self.mount_audit,
             "service_responsiveness": self.service_responsiveness,
+            "plex_throttle": self.plex_throttle,
         }
 
 
@@ -73,6 +78,7 @@ class HealthServer:
         app.router.add_get("/health/permissions", self._perms)
         app.router.add_get("/health/qbit", self._qbit)
         app.router.add_get("/health/arr_services", self._arr)
+        app.router.add_get("/health/plex_throttle", self._plex_throttle)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self._host, self._port)
@@ -101,3 +107,6 @@ class HealthServer:
 
     async def _arr(self, req):
         return web.json_response(self._state.arr_services)
+
+    async def _plex_throttle(self, req):
+        return web.json_response(self._state.plex_throttle)

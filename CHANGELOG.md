@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.0 — 2026-05-03
+
+### Added
+- **`plex_throttle` module — Plex-aware qBittorrent download cap.** Polls Plex
+  `/status/sessions` on a fixed interval (default 30s). Three tiers: transcode
+  active → tight cap (default 5 MB/s); direct play active → moderate cap
+  (default 30 MB/s); idle (after grace) → unrestricted. Idempotent — only
+  hits qBit when the target changes. Grace window (default 60s) prevents
+  flapping when a stream pauses or buffers. Plex unreachable is treated as
+  "lost visibility, don't lift caps blindly" — the prior limit is preserved.
+  qBit failures are logged + retried on the next tick, never crash the job.
+  Driven by S108 incident 2026-05-03 where unrelated disk-I/O contention
+  surfaced the absence of any Plex-aware orchestration; bandwidth-class
+  contention is the immediate fix this module ships, disk-class contention
+  remains follow-up work.
+- New env vars: `PLEX_THROTTLE_ENABLED`, `PLEX_URL`, `PLEX_TOKEN`,
+  `PLEX_THROTTLE_INTERVAL`, `PLEX_THROTTLE_IDLE_LIMIT_KBPS`,
+  `PLEX_THROTTLE_DIRECTPLAY_LIMIT_KBPS`,
+  `PLEX_THROTTLE_TRANSCODE_LIMIT_KBPS`, `PLEX_THROTTLE_GRACE`. Disabled by
+  default; opt-in per deployment. Reuses the `plex_client` already created
+  by `permissions_health` if both are enabled, otherwise creates its own.
+- New event: `plex_throttle.applied` (emitted only when the cap actually
+  changes — no event spam from no-op ticks).
+- New endpoint: `GET /health/plex_throttle` returns the latest snapshot
+  (plex_state, active_sessions, transcode_sessions, target_kbps,
+  applied_kbps, last_active_at, in_grace, last_action, error).
+- `QBitClient.set_download_limit(bytes_per_sec)` and `get_download_limit()`
+  for the throttle module. Both follow the existing 403→re-login retry
+  pattern.
+
+### Fixed
+- `__version__` in `src/docktarr/__init__.py` was hardcoded `"0.3.0"` and had
+  drifted across four releases. Now sourced from the installed package via
+  `importlib.metadata` semantics in `main.py` (already correct there); the
+  `__init__.py` literal is updated to match for any code that imports it
+  directly.
+
 ## 0.6.0 — 2026-05-01
 
 ### Fixed

@@ -490,6 +490,75 @@ async def _build_scheduler_for_test(
                 sr_cooldown,
             )
 
+    # --- plex_throttle (v0.7.0 2026-05-03) ---
+    # Plex-aware qBit download cap. When Plex has a stream, throttle qBit so it
+    # doesn't compete for bandwidth/disk. Idempotent + grace-windowed. Disabled
+    # by default (PLEX_THROTTLE_ENABLED=false). Requires PLEX_URL + PLEX_TOKEN
+    # + qBit configured.
+    _plex_throttle_enabled = os.environ.get(
+        "PLEX_THROTTLE_ENABLED", "false"
+    ).strip().lower() not in ("0", "false", "no", "")
+    _plex_throttle_url = os.environ.get("PLEX_URL", "").strip()
+    _plex_throttle_token = os.environ.get("PLEX_TOKEN", "").strip()
+    if (
+        _plex_throttle_enabled
+        and _plex_throttle_url
+        and _plex_throttle_token
+        and qbit is not None
+    ):
+        from docktarr.plex_throttle import (
+            PlexThrottleConfig,
+            PlexThrottleState,
+            run_plex_throttle,
+        )
+
+        if plex_client is None:
+            from docktarr.plex_api import PlexClient
+
+            plex_client = PlexClient(_plex_throttle_url, _plex_throttle_token)
+
+        plex_throttle_cfg = PlexThrottleConfig(
+            plex_url=_plex_throttle_url,
+            plex_token=_plex_throttle_token,
+            interval=parse_duration(os.environ.get("PLEX_THROTTLE_INTERVAL", "30s")),
+            idle_limit_kbps=int(os.environ.get("PLEX_THROTTLE_IDLE_LIMIT_KBPS", "0")),
+            directplay_limit_kbps=int(
+                os.environ.get("PLEX_THROTTLE_DIRECTPLAY_LIMIT_KBPS", "30000")
+            ),
+            transcode_limit_kbps=int(
+                os.environ.get("PLEX_THROTTLE_TRANSCODE_LIMIT_KBPS", "5000")
+            ),
+            grace=parse_duration(os.environ.get("PLEX_THROTTLE_GRACE", "60s")),
+        )
+        plex_throttle_state = PlexThrottleState()
+
+        async def _plex_throttle_job():
+            await run_plex_throttle(
+                plex_client,
+                qbit,
+                notifier,
+                plex_throttle_cfg,
+                state=plex_throttle_state,
+                health_state=health_state,
+            )
+
+        scheduler.add_job(
+            _plex_throttle_job,
+            "interval",
+            seconds=plex_throttle_cfg.interval.total_seconds(),
+            id="plex_throttle",
+            next_run_time=datetime.now(timezone.utc),
+        )
+        log.info(
+            "plex_throttle enabled (interval=%s, idle=%dkB/s, directplay=%dkB/s, "
+            "transcode=%dkB/s, grace=%s)",
+            plex_throttle_cfg.interval,
+            plex_throttle_cfg.idle_limit_kbps,
+            plex_throttle_cfg.directplay_limit_kbps,
+            plex_throttle_cfg.transcode_limit_kbps,
+            plex_throttle_cfg.grace,
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

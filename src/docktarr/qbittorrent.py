@@ -51,6 +51,37 @@ class QBitClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def set_download_limit(self, bytes_per_sec: int) -> None:
+        """Set the global download speed limit in bytes/sec. ``0`` = unlimited."""
+        resp = await self._client.post(
+            f"{self._base_url}/api/v2/transfer/setDownloadLimit",
+            data={"limit": str(int(bytes_per_sec))},
+            cookies=self._cookies(),
+        )
+        if resp.status_code == 403:
+            await self.login()
+            resp = await self._client.post(
+                f"{self._base_url}/api/v2/transfer/setDownloadLimit",
+                data={"limit": str(int(bytes_per_sec))},
+                cookies=self._cookies(),
+            )
+        resp.raise_for_status()
+
+    async def get_download_limit(self) -> int:
+        """Return the current global download limit in bytes/sec. ``0`` = unlimited."""
+        resp = await self._client.get(
+            f"{self._base_url}/api/v2/transfer/downloadLimit",
+            cookies=self._cookies(),
+        )
+        if resp.status_code == 403:
+            await self.login()
+            resp = await self._client.get(
+                f"{self._base_url}/api/v2/transfer/downloadLimit",
+                cookies=self._cookies(),
+            )
+        resp.raise_for_status()
+        return int(resp.text.strip() or "0")
+
     async def delete_torrent(self, hash: str, delete_files: bool = True) -> None:
         """Delete a torrent by hash."""
         resp = await self._client.post(
