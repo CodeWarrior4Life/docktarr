@@ -245,3 +245,25 @@ async def test_scenario_5_auto_patch_dns_broken_does_not_patch():
     sonarr.put_download_client_host.assert_not_awaited()
     assert not any(e["event"] == "dc_health.auto_patched" for e in events)
     assert any(e["event"] == "dc_health.unreachable" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_scenario_8_new_member_discovered_and_probed():
+    sonarr = _make_arr_client(name="Sonarr", host="gluetun")
+    sonarr_anime = _make_arr_client(name="Sonarr-Anime", host="gluetun")
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    notifier, events = _make_notifier()
+
+    report = await run_download_client_health(
+        {"Sonarr": sonarr, "Sonarr-Anime": sonarr_anime},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_DEFAULT_CFG,
+    )
+
+    app_names = {r["app"] for r in report["results"]}
+    assert app_names == {"Sonarr", "Sonarr-Anime"}
+    sonarr.get_download_clients.assert_awaited_once()
+    sonarr_anime.get_download_clients.assert_awaited_once()
+    sonarr.test_download_client.assert_awaited_once()
+    sonarr_anime.test_download_client.assert_awaited_once()
