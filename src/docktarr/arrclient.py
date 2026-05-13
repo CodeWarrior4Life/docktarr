@@ -59,6 +59,46 @@ class ArrClient:
             page += 1
         return items
 
+    async def get_download_clients(self) -> list[dict]:
+        v = self._api_version()
+        resp = await self._client.get(
+            f"{self._url}/api/{v}/downloadclient",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def test_download_client(self, client_config: dict) -> tuple[bool, int, str]:
+        v = self._api_version()
+        try:
+            resp = await self._client.post(
+                f"{self._url}/api/{v}/downloadclient/test",
+                json=client_config,
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as exc:
+            return False, 0, str(exc)
+        return resp.status_code == 200, resp.status_code, resp.text
+
+    async def put_download_client_host(self, client_id: int, new_host: str) -> bool:
+        v = self._api_version()
+        get = await self._client.get(
+            f"{self._url}/api/{v}/downloadclient/{client_id}",
+            headers=self._headers(),
+        )
+        if get.status_code != 200:
+            return False
+        body = get.json()
+        for f in body.get("fields", []):
+            if f.get("name") == "host":
+                f["value"] = new_host
+        put = await self._client.put(
+            f"{self._url}/api/{v}/downloadclient/{client_id}",
+            json=body,
+            headers=self._headers(),
+        )
+        return put.status_code < 400
+
     async def remove_and_blacklist(self, queue_id: int) -> bool:
         """Remove a queue item, blacklist the release, and trigger re-search."""
         v = self._api_version()

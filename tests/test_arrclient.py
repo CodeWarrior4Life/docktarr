@@ -70,3 +70,98 @@ class TestArrClient:
         config = ArrAppConfig(url="http://readarr:8787", api_key="key", name="Readarr")
         client = ArrClient(config)
         assert client._api_version() == "v1"
+
+
+# ---------------------------------------------------------------------------
+# Download-client API tests (standalone, not in the class fixture)
+# ---------------------------------------------------------------------------
+
+
+def _client_with_handler(handler):
+    app = ArrAppConfig(url="http://sonarr:8989", api_key="abc", name="Sonarr")
+    c = ArrClient(app)
+    c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return c
+
+
+@pytest.mark.asyncio
+async def test_get_download_clients_returns_list():
+    payload = [
+        {
+            "id": 1,
+            "name": "qBittorrent",
+            "enable": True,
+            "fields": [
+                {"name": "host", "value": "gluetun"},
+                {"name": "port", "value": 8082},
+            ],
+        },
+    ]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/v3/downloadclient"
+        assert req.headers["X-Api-Key"] == "abc"
+        return httpx.Response(200, json=payload)
+
+    c = _client_with_handler(handler)
+    result = await c.get_download_clients()
+    assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_test_download_client_pass():
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/v3/downloadclient/test"
+        assert req.method == "POST"
+        return httpx.Response(200, json={})
+
+    c = _client_with_handler(handler)
+    ok, status, body = await c.test_download_client(
+        {"name": "qBittorrent", "fields": []}
+    )
+    assert ok is True
+    assert status == 200
+    assert body == "{}"
+
+
+@pytest.mark.asyncio
+async def test_test_download_client_fail_returns_body():
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json=[{"propertyName": "host", "errorMessage": "Unable to connect"}],
+        )
+
+    c = _client_with_handler(handler)
+    ok, status, body = await c.test_download_client({"name": "x"})
+    assert ok is False
+    assert status == 400
+    assert "Unable to connect" in body
+
+
+@pytest.mark.asyncio
+async def test_put_download_client_host_rewrites_host_field():
+    current = {
+        "id": 1,
+        "name": "qBittorrent",
+        "enable": True,
+        "fields": [
+            {"name": "host", "value": "172.29.0.2"},
+            {"name": "port", "value": 8082},
+        ],
+    }
+    captured = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET":
+            return httpx.Response(200, json=current)
+        captured["body"] = req.read()
+        return httpx.Response(202)
+
+    c = _client_with_handler(handler)
+    ok = await c.put_download_client_host(client_id=1, new_host="gluetun")
+    assert ok is True
+    body = json.loads(captured["body"])
+    fields = {f["name"]: f["value"] for f in body["fields"]}
+    assert fields["host"] == "gluetun"
+    assert fields["port"] == 8082

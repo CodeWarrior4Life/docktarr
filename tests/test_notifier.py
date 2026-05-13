@@ -176,6 +176,17 @@ class TestTelegramSink:
         assert len(captured["discord"]) == 1
 
 
+def test_dc_health_templates_present():
+    from docktarr.notifier import _TEMPLATES
+
+    for event in (
+        "dc_health.literal_ip",
+        "dc_health.unreachable",
+        "dc_health.auto_patched",
+    ):
+        assert event in _TEMPLATES
+
+
 def test_new_event_types_are_allowed():
     # The notifier module must recognize each of these event types.
     # If notifier uses KNOWN_EVENTS set → check membership.

@@ -45,6 +45,21 @@ class ContainerInfo:
     device_paths: list[str] = field(default_factory=list)
     exit_code: int | None = None
     started_at: datetime | None = None
+    ip_addresses: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def primary_ip(self) -> str | None:
+        """First non-empty IP in ip_addresses (dict-insertion order).
+
+        For a single-network container (e.g. gluetun on one user-defined network)
+        this is unambiguous. For multi-network containers it returns whatever
+        network Docker serialized first in NetworkSettings.Networks. If you need
+        a specific network, look up ip_addresses[<network_name>] directly.
+        """
+        for ip in self.ip_addresses.values():
+            if ip:
+                return ip
+        return None
 
 
 class DockerManager:
@@ -68,6 +83,12 @@ class DockerManager:
         raw_exit = state.get("ExitCode")
         exit_code = int(raw_exit) if raw_exit is not None else None
         started_at = _parse_started_at(state.get("StartedAt"))
+        networks = (c.attrs.get("NetworkSettings", {}) or {}).get("Networks", {}) or {}
+        ip_addresses = {
+            net: (data or {}).get("IPAddress", "")
+            for net, data in networks.items()
+            if (data or {}).get("IPAddress")
+        }
 
         return ContainerInfo(
             name=c.name,
@@ -77,6 +98,7 @@ class DockerManager:
             device_paths=device_paths,
             exit_code=exit_code,
             started_at=started_at,
+            ip_addresses=ip_addresses,
         )
 
     async def restart(self, name: str) -> None:

@@ -271,6 +271,54 @@ async def _build_scheduler_for_test(
             _qbit_health_interval,
         )
 
+    # --- download_client_health (S114) ---
+    dc_health_enabled = os.environ.get(
+        "DC_HEALTH_ENABLED", "true"
+    ).strip().lower() not in ("0", "false", "no")
+    _dc_health_job = None
+    if dc_health_enabled and arr_clients:
+        from docktarr.download_client_health import (
+            DownloadClientHealthConfig,
+            run_download_client_health,
+        )
+
+        if docker_mgr is None:
+            docker_mgr = DockerManager()
+
+        dc_vpn_container = os.environ.get("DC_HEALTH_VPN_CONTAINER", "gluetun").strip()
+        dc_auto_patch = os.environ.get(
+            "DC_HEALTH_AUTO_PATCH", "false"
+        ).strip().lower() not in ("0", "false", "no", "")
+        dc_health_cfg = DownloadClientHealthConfig(
+            vpn_container=dc_vpn_container,
+            auto_patch=dc_auto_patch,
+        )
+
+        async def _dc_health_job():
+            await run_download_client_health(
+                arr_clients,
+                docker_mgr,
+                notifier,
+                dc_health_cfg,
+                health_state=health_state,
+            )
+
+        dc_health_interval = os.environ.get("DC_HEALTH_INTERVAL", "5m")
+        scheduler.add_job(
+            _dc_health_job,
+            "interval",
+            seconds=parse_duration(dc_health_interval).total_seconds(),
+            id="download_client_health",
+            next_run_time=datetime.now(timezone.utc),
+        )
+        log.info(
+            "download_client_health enabled (vpn=%s, auto_patch=%s, interval=%s, apps=%s)",
+            dc_vpn_container,
+            dc_auto_patch,
+            dc_health_interval,
+            list(arr_clients.keys()),
+        )
+
     # --- vpn_health (ported from arr-orchestrator, T14) ---
     _vpn_healthcheck_url = os.environ.get("VPN_HEALTHCHECK_URL", "").strip()
     if _vpn_healthcheck_url:
@@ -296,8 +344,37 @@ async def _build_scheduler_for_test(
             docker_mgr = DockerManager()
         vpn_http = httpx.AsyncClient(timeout=10.0)
 
-        async def _vpn_health_job():
-            await run_vpn_health(vpn_http, docker_mgr, notifier, vpn_health_cfg)
+        if _dc_health_job is not None:
+            # NOTE: We rebind notifier.emit on the shared Notifier instance to observe
+            # vpn.restart_finished without changing Notifier's public API. This wrap is
+            # one-shot — do NOT call this block twice or you'll stack closures. Keep the
+            # download_client_health block placed BEFORE the vpn_health block so the
+            # observer can reference _dc_health_job at definition time.
+            _orig_emit = notifier.emit
+            # AsyncIOScheduler runs all jobs on one event loop — no preemption between
+            # await points. Dict-mutation here is safe. Do NOT switch to ThreadPoolExecutor
+            # without revisiting concurrency on this flag.
+            _dc_pending = {"flag": False}
+
+            async def _emit_with_observer(event, payload):
+                await _orig_emit(event, payload)
+                if event == "vpn.restart_finished":
+                    _dc_pending["flag"] = True
+
+            notifier.emit = _emit_with_observer  # type: ignore[assignment]
+
+            async def _vpn_health_job():
+                await run_vpn_health(vpn_http, docker_mgr, notifier, vpn_health_cfg)
+                if _dc_pending["flag"]:
+                    _dc_pending["flag"] = False
+                    try:
+                        await _dc_health_job()
+                    except Exception as exc:
+                        log.warning("dc_health post-vpn probe failed: %s", exc)
+        else:
+
+            async def _vpn_health_job():
+                await run_vpn_health(vpn_http, docker_mgr, notifier, vpn_health_cfg)
 
         _vpn_health_interval = os.environ.get("VPN_HEALTH_INTERVAL", "2m")
         scheduler.add_job(

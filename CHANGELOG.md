@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.1 — 2026-05-12
+
+### Added
+- **`download_client_health` module — proactive download-client probe.** Walks
+  every ARR app's `/api/{v}/downloadclient` config every 5 minutes, statically
+  lints `host` for literal IPs, and runs a live `/downloadclient/test` to
+  confirm reachability. Optional `DC_HEALTH_AUTO_PATCH` (default off) rewrites
+  stale literal IPs back to the VPN container's DNS alias after verifying
+  `getent hosts <name>` resolves inside the ARR app's own container. Hooks
+  `vpn.restart_finished` to run an immediate out-of-band probe so a gluetun
+  restart that rotates the bridge IP can't dry the river for 3 days (S113
+  incident — `arr_known_issues.md` Pattern 12). New
+  `/health/download_clients` endpoint returns the latest report. MAM-safe:
+  configuration-only writes, no torrent-state mutation.
+- New env vars: `DC_HEALTH_ENABLED`, `DC_HEALTH_INTERVAL`,
+  `DC_HEALTH_VPN_CONTAINER`, `DC_HEALTH_AUTO_PATCH`.
+- `ContainerInfo.ip_addresses` + `primary_ip` for downstream IP attribution.
+- `vpn.restart_finished` event from `vpn_health` after a successful gluetun
+  restart.
+
+### Notes
+- 18 new tests across new and existing test files (baseline 206 → 224).
+- Spec: `02_Projects/Media Library/Specifications/Doctarr - Download Client Health Check.md`.
+- Plan: `docs/superpowers/plans/2026-05-12-download-client-health.md`.
+
 ## 0.7.0 — 2026-05-03
 
 ### Added

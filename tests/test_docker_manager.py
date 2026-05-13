@@ -79,3 +79,28 @@ async def test_get_container_missing_raises():
     dm = DockerManager(_client=fake_client)
     with pytest.raises(LookupError):
         await dm.get_container("DoesNotExist")
+
+
+@pytest.mark.asyncio
+async def test_get_container_populates_ip_addresses():
+    fake = MagicMock()
+    fake.name = "gluetun"
+    fake.status = "running"
+    fake.attrs = {
+        "Config": {"Env": [], "Image": "qmcgaw/gluetun:latest"},
+        "HostConfig": {"Devices": []},
+        "State": {"ExitCode": 0, "StartedAt": "2026-05-09T18:15:00Z"},
+        "NetworkSettings": {
+            "Networks": {
+                "arr_default": {"IPAddress": "172.29.0.7"},
+                "bridge": {"IPAddress": ""},
+            }
+        },
+    }
+    client = MagicMock()
+    client.containers.get.return_value = fake
+
+    dm = DockerManager(_client=client)
+    info = await dm.get_container("gluetun")
+    assert info.ip_addresses == {"arr_default": "172.29.0.7"}
+    assert info.primary_ip == "172.29.0.7"
