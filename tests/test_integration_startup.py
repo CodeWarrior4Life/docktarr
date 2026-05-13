@@ -149,3 +149,27 @@ async def test_scheduler_minimal_config(tmp_path, monkeypatch):
     finally:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_download_client_health_job_registered(monkeypatch):
+    monkeypatch.setenv("DOCKTARR_SKIP_NETWORK_INIT", "1")
+    monkeypatch.setenv("PROWLARR_URL", "http://prowlarr:9696")
+    monkeypatch.setenv("PROWLARR_API_KEY", "x")
+    monkeypatch.setenv("QBITTORRENT_URL", "http://qbit:8082")
+    monkeypatch.setenv("QBITTORRENT_USERNAME", "u")
+    monkeypatch.setenv("QBITTORRENT_PASSWORD", "p")
+    monkeypatch.setenv("SONARR_URL", "http://sonarr:8989")
+    monkeypatch.setenv("SONARR_API_KEY", "k")
+
+    from docktarr.main import _build_scheduler_for_test
+
+    result = await _build_scheduler_for_test()
+    scheduler = result[0]
+
+    try:
+        ids = {j.id for j in scheduler.get_jobs()}
+        assert "download_client_health" in ids
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
