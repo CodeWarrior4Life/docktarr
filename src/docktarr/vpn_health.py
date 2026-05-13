@@ -114,9 +114,16 @@ async def run_vpn_health(
                 "reason": f"container not running (status={info.status!r})",
             },
         )
+        await notifier.emit(
+            "vpn.restart_finished",
+            {"container_name": config.container_name},
+        )
         return
 
-    log.debug("vpn_health: container %r is running — probing HTTP status", config.container_name)
+    log.debug(
+        "vpn_health: container %r is running — probing HTTP status",
+        config.container_name,
+    )
 
     # ------------------------------------------------------------------
     # 2. HTTP status probe (region + port forwarding)
@@ -193,9 +200,7 @@ async def _probe_gluetun_status(
         return None
 
     if resp.status_code != 200:
-        log.error(
-            "vpn_health: HTTP probe returned %d for %r", resp.status_code, url
-        )
+        log.error("vpn_health: HTTP probe returned %d for %r", resp.status_code, url)
         return None
 
     try:

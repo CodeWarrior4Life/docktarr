@@ -34,7 +34,9 @@ def _gluetun_response(
     return {"public_ip": public_ip, "port_forwarded": port_forwarded, "region": region}
 
 
-def _make_http_client(status_json: dict | None = None, *, status_code: int = 200) -> httpx.AsyncClient:
+def _make_http_client(
+    status_json: dict | None = None, *, status_code: int = 200
+) -> httpx.AsyncClient:
     """Return an AsyncClient backed by a MockTransport that returns the given JSON."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -103,7 +105,9 @@ def _make_docker(container: ContainerInfo | None) -> MagicMock:
 @pytest.mark.asyncio
 async def test_healthy_ca_region_with_port_forwarding():
     """VPN healthy + CA region + port forwarding active → no action, no events."""
-    http = _make_http_client(_gluetun_response(region="CA Toronto", port_forwarded=54321))
+    http = _make_http_client(
+        _gluetun_response(region="CA Toronto", port_forwarded=54321)
+    )
     dm = _make_docker(_make_container(status="running"))
     notifier, events = _make_notifier()
 
@@ -116,7 +120,9 @@ async def test_healthy_ca_region_with_port_forwarding():
 @pytest.mark.asyncio
 async def test_us_region_emits_vpn_degraded():
     """VPN healthy + US region → emit vpn.degraded (PIA Pattern 6)."""
-    http = _make_http_client(_gluetun_response(region="US New York", port_forwarded=54321))
+    http = _make_http_client(
+        _gluetun_response(region="US New York", port_forwarded=54321)
+    )
     dm = _make_docker(_make_container(status="running"))
     notifier, events = _make_notifier()
 
@@ -155,10 +161,11 @@ async def test_container_exited_triggers_restart():
     await run_vpn_health(http, dm, notifier, _DEFAULT_CONFIG)
 
     dm.restart.assert_awaited_once_with("gluetun")
-    assert len(events) == 1
-    assert events[0]["event"] == "vpn.restarted"
-    assert events[0]["payload"]["container_name"] == "gluetun"
-    assert "not running" in events[0]["payload"]["reason"]
+    event_names = [e["event"] for e in events]
+    assert "vpn.restarted" in event_names
+    restarted = next(e for e in events if e["event"] == "vpn.restarted")
+    assert restarted["payload"]["container_name"] == "gluetun"
+    assert "not running" in restarted["payload"]["reason"]
 
 
 @pytest.mark.asyncio
@@ -197,7 +204,9 @@ async def test_allowed_regions_via_config():
         require_port_forwarding=True,
     )
     # DE Frankfurt is allowed by this custom config — should be healthy
-    http_de = _make_http_client(_gluetun_response(region="DE Frankfurt", port_forwarded=55000))
+    http_de = _make_http_client(
+        _gluetun_response(region="DE Frankfurt", port_forwarded=55000)
+    )
     dm = _make_docker(_make_container(status="running"))
     notifier, events = _make_notifier()
 
@@ -206,7 +215,9 @@ async def test_allowed_regions_via_config():
     assert events == [], "DE Frankfurt should be healthy with custom allowed_regions"
 
     # CA Toronto would be wrong for this config
-    http_ca = _make_http_client(_gluetun_response(region="CA Toronto", port_forwarded=55000))
+    http_ca = _make_http_client(
+        _gluetun_response(region="CA Toronto", port_forwarded=55000)
+    )
     dm2 = _make_docker(_make_container(status="running"))
     notifier2, events2 = _make_notifier()
 
@@ -238,10 +249,29 @@ async def test_port_forwarding_not_required():
 @pytest.mark.asyncio
 async def test_region_check_is_case_insensitive():
     """Region comparison is case-insensitive."""
-    http = _make_http_client(_gluetun_response(region="ca toronto", port_forwarded=54321))
+    http = _make_http_client(
+        _gluetun_response(region="ca toronto", port_forwarded=54321)
+    )
     dm = _make_docker(_make_container(status="running"))
     notifier, events = _make_notifier()
 
     await run_vpn_health(http, dm, notifier, _DEFAULT_CONFIG)
 
-    assert events == [], "Lowercase 'ca toronto' should match 'CA Toronto' in allowed list"
+    assert events == [], (
+        "Lowercase 'ca toronto' should match 'CA Toronto' in allowed list"
+    )
+
+
+@pytest.mark.asyncio
+async def test_container_exited_also_emits_restart_finished():
+    http = _make_http_client()
+    dm = _make_docker(_make_container(status="exited", exit_code=1))
+    notifier, events = _make_notifier()
+
+    await run_vpn_health(http, dm, notifier, _DEFAULT_CONFIG)
+
+    event_names = [e["event"] for e in events]
+    assert "vpn.restarted" in event_names
+    assert "vpn.restart_finished" in event_names
+    finished = next(e for e in events if e["event"] == "vpn.restart_finished")
+    assert finished["payload"]["container_name"] == "gluetun"
