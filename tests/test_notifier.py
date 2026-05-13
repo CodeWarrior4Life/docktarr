@@ -183,7 +183,6 @@ def test_dc_health_templates_present():
         "dc_health.literal_ip",
         "dc_health.unreachable",
         "dc_health.auto_patched",
-        "dc_health.skipped_no_credentials",
     ):
         assert event in _TEMPLATES
 

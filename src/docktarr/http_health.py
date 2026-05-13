@@ -118,4 +118,6 @@ class HealthServer:
         return web.json_response(self._state.plex_throttle)
 
     async def _dc_health(self, req):
+        if self._state.dc_health is None:
+            return web.json_response({"ts": None, "results": []})
         return web.json_response(self._state.dc_health)

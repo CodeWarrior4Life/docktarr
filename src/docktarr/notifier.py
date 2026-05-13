@@ -68,9 +68,6 @@ _TEMPLATES = {
         "**[Docktarr]** {app} download-client {client_id} auto-patched: "
         "host {host_before} -> {host_after}"
     ),
-    "dc_health.skipped_no_credentials": (
-        "**[Docktarr]** {app} download-client probe skipped: no API credentials"
-    ),
 }
 
 

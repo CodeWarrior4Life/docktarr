@@ -345,7 +345,15 @@ async def _build_scheduler_for_test(
         vpn_http = httpx.AsyncClient(timeout=10.0)
 
         if _dc_health_job is not None:
+            # NOTE: We rebind notifier.emit on the shared Notifier instance to observe
+            # vpn.restart_finished without changing Notifier's public API. This wrap is
+            # one-shot — do NOT call this block twice or you'll stack closures. Keep the
+            # download_client_health block placed BEFORE the vpn_health block so the
+            # observer can reference _dc_health_job at definition time.
             _orig_emit = notifier.emit
+            # AsyncIOScheduler runs all jobs on one event loop — no preemption between
+            # await points. Dict-mutation here is safe. Do NOT switch to ThreadPoolExecutor
+            # without revisiting concurrency on this flag.
             _dc_pending = {"flag": False}
 
             async def _emit_with_observer(event, payload):

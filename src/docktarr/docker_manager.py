@@ -49,6 +49,13 @@ class ContainerInfo:
 
     @property
     def primary_ip(self) -> str | None:
+        """First non-empty IP in ip_addresses (dict-insertion order).
+
+        For a single-network container (e.g. gluetun on one user-defined network)
+        this is unambiguous. For multi-network containers it returns whatever
+        network Docker serialized first in NetworkSettings.Networks. If you need
+        a specific network, look up ip_addresses[<network_name>] directly.
+        """
         for ip in self.ip_addresses.values():
             if ip:
                 return ip
