@@ -102,7 +102,8 @@ class Config:
             "qbit.restarted,qbit.stale_namespace_restart,"
             "qbit.unreachable_threshold_restart,qbit.restart_failed,"
             "arr.restarted,arr.unreachable_threshold_restart,arr.restart_failed,"
-            "imposter.detected",
+            "imposter.detected,"
+            "dc_health.literal_ip,dc_health.unreachable,dc_health.auto_patched",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None

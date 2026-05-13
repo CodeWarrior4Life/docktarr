@@ -56,6 +56,21 @@ _TEMPLATES = {
     "service.external_route_restart_failed": (
         "**[Docktarr]** {name} proxy ({proxy_container}) restart FAILED: {error}"
     ),
+    "dc_health.literal_ip": (
+        "**[Docktarr]** {app} download-client {client_id} uses literal IP "
+        "**{host}** (suggested alias: {suggested_alias})"
+    ),
+    "dc_health.unreachable": (
+        "**[Docktarr]** {app} download-client UNREACHABLE: host={host} "
+        "port={port} — {test_response}"
+    ),
+    "dc_health.auto_patched": (
+        "**[Docktarr]** {app} download-client {client_id} auto-patched: "
+        "host {host_before} -> {host_after}"
+    ),
+    "dc_health.skipped_no_credentials": (
+        "**[Docktarr]** {app} download-client probe skipped: no API credentials"
+    ),
 }
 
 
