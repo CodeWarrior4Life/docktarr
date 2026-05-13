@@ -128,6 +128,25 @@ async def run_download_client_health(
                 )
                 result["status"] = "literal_ip"
 
+            ok, status, body = await client.test_download_client(cfg)
+            if not ok:
+                await notifier.emit(
+                    "dc_health.unreachable",
+                    {
+                        "app": app_name,
+                        "client_id": cfg.get("id"),
+                        "host": host,
+                        "port": port,
+                        "test_response": body,
+                    },
+                )
+                if result["status"] == "ok":
+                    result["status"] = "unreachable"
+                elif result["status"] == "literal_ip":
+                    result["status"] = "literal_ip+unreachable"
+            result["test_status"] = status
+            result["test_body"] = body if not ok else None
+
             results.append(result)
 
     report = {"ts": now.isoformat(), "results": results}

@@ -123,3 +123,76 @@ async def test_scenario_2_literal_ip_current_emits_literal_ip_with_alias():
     assert events[0]["event"] == "dc_health.literal_ip"
     assert events[0]["payload"]["host"] == "172.29.0.7"
     assert events[0]["payload"]["suggested_alias"] == "gluetun"
+
+
+@pytest.mark.asyncio
+async def test_scenario_3_stale_literal_ip_emits_both_literal_and_unreachable():
+    sonarr = _make_arr_client(
+        name="Sonarr",
+        host="172.29.0.2",
+        test_result=(False, 400, '[{"errorMessage":"Unable to connect"}]'),
+    )
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    notifier, events = _make_notifier()
+
+    await run_download_client_health(
+        {"Sonarr": sonarr},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_DEFAULT_CFG,
+    )
+
+    event_names = [e["event"] for e in events]
+    assert "dc_health.literal_ip" in event_names
+    assert "dc_health.unreachable" in event_names
+    unreachable = next(e for e in events if e["event"] == "dc_health.unreachable")
+    assert unreachable["payload"]["host"] == "172.29.0.2"
+    assert "Unable to connect" in unreachable["payload"]["test_response"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_6_qbit_down_emits_unreachable_dns_host():
+    sonarr = _make_arr_client(
+        name="Sonarr",
+        host="gluetun",
+        test_result=(
+            False,
+            400,
+            '[{"errorMessage":"Unable to connect to qBittorrent"}]',
+        ),
+    )
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    notifier, events = _make_notifier()
+
+    await run_download_client_health(
+        {"Sonarr": sonarr},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_DEFAULT_CFG,
+    )
+
+    event_names = [e["event"] for e in events]
+    assert "dc_health.unreachable" in event_names
+    assert "dc_health.literal_ip" not in event_names
+
+
+@pytest.mark.asyncio
+async def test_scenario_7_wrong_creds_emits_unreachable_with_auth_body():
+    sonarr = _make_arr_client(
+        name="Sonarr",
+        host="gluetun",
+        test_result=(False, 200, '[{"errorMessage":"Failed to authenticate"}]'),
+    )
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    notifier, events = _make_notifier()
+
+    await run_download_client_health(
+        {"Sonarr": sonarr},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_DEFAULT_CFG,
+    )
+
+    unreachable = [e for e in events if e["event"] == "dc_health.unreachable"]
+    assert len(unreachable) == 1
+    assert "authenticate" in unreachable[0]["payload"]["test_response"].lower()
