@@ -147,6 +147,53 @@ async def run_download_client_health(
             result["test_status"] = status
             result["test_body"] = body if not ok else None
 
+            patched_to_dns = False
+            if (
+                config.auto_patch
+                and literal
+                and current_vpn_ip is not None
+                and host == current_vpn_ip
+                and docker_manager is not None
+            ):
+                try:
+                    rc, _out = await docker_manager.exec_run(
+                        client.container_name,
+                        ["getent", "hosts", config.vpn_container],
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "download_client_health: %s: getent verify failed: %s",
+                        app_name,
+                        exc,
+                    )
+                    rc = 1
+                if rc == 0:
+                    patched = await client.put_download_client_host(
+                        client_id=cfg["id"],
+                        new_host=config.vpn_container,
+                    )
+                    if patched:
+                        await notifier.emit(
+                            "dc_health.auto_patched",
+                            {
+                                "app": app_name,
+                                "client_id": cfg.get("id"),
+                                "host_before": host,
+                                "host_after": config.vpn_container,
+                            },
+                        )
+                        result["status"] = "auto_patched"
+                        patched_to_dns = True
+                else:
+                    log.warning(
+                        "download_client_health: %s: getent %s failed (rc=%s) — "
+                        "skipping auto_patch",
+                        app_name,
+                        config.vpn_container,
+                        rc,
+                    )
+            result["auto_patched"] = patched_to_dns
+
             results.append(result)
 
     report = {"ts": now.isoformat(), "results": results}

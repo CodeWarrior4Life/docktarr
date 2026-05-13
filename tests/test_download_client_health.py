@@ -196,3 +196,52 @@ async def test_scenario_7_wrong_creds_emits_unreachable_with_auth_body():
     unreachable = [e for e in events if e["event"] == "dc_health.unreachable"]
     assert len(unreachable) == 1
     assert "authenticate" in unreachable[0]["payload"]["test_response"].lower()
+
+
+_AUTOPATCH_CFG = DownloadClientHealthConfig(vpn_container="gluetun", auto_patch=True)
+
+
+@pytest.mark.asyncio
+async def test_scenario_4_auto_patch_happy_path_rewrites_host():
+    sonarr = _make_arr_client(
+        name="Sonarr", host="172.29.0.7", test_result=(False, 400, "Unable to connect")
+    )
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    dm.exec_run = AsyncMock(return_value=(0, "172.29.0.7 gluetun"))
+    notifier, events = _make_notifier()
+
+    await run_download_client_health(
+        {"Sonarr": sonarr},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_AUTOPATCH_CFG,
+    )
+
+    sonarr.put_download_client_host.assert_awaited_once_with(
+        client_id=1, new_host="gluetun"
+    )
+    patched = [e for e in events if e["event"] == "dc_health.auto_patched"]
+    assert len(patched) == 1
+    assert patched[0]["payload"]["host_before"] == "172.29.0.7"
+    assert patched[0]["payload"]["host_after"] == "gluetun"
+
+
+@pytest.mark.asyncio
+async def test_scenario_5_auto_patch_dns_broken_does_not_patch():
+    sonarr = _make_arr_client(
+        name="Sonarr", host="172.29.0.7", test_result=(False, 400, "Unable to connect")
+    )
+    dm = _make_docker(vpn_ip="172.29.0.7")
+    dm.exec_run = AsyncMock(return_value=(2, ""))
+    notifier, events = _make_notifier()
+
+    await run_download_client_health(
+        {"Sonarr": sonarr},
+        docker_manager=dm,
+        notifier=notifier,
+        config=_AUTOPATCH_CFG,
+    )
+
+    sonarr.put_download_client_host.assert_not_awaited()
+    assert not any(e["event"] == "dc_health.auto_patched" for e in events)
+    assert any(e["event"] == "dc_health.unreachable" for e in events)
