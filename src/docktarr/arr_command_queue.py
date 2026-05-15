@@ -51,15 +51,20 @@ log = logging.getLogger("docktarr.arr_command_queue")
 class ArrCommandQueueConfig:
     """Tunables for the command-queue drainer.
 
-    Defaults are deliberately conservative: 50+ stale ``unspecified``
-    commands older than 10 minutes is well outside normal operation and
-    should never trip on legitimate user activity.
+    Defaults are tuned to catch a burst inside a single Sonarr
+    scheduled-task cycle (5 min minimum). The 2026-05-13 wedge ran for
+    *15 hours* because the prior defaults (60s poll, 50/600s gate) only
+    fired well after the damage was done. We now poll every 15s, drain at
+    30 candidates / 120s, and have a burst-rate side gate that triggers
+    immediately on classic floods (e.g. 891 commands in 24s = 37/sec).
+    Scheduler-liveness (see :mod:`docktarr.arr_scheduler_health`) is the
+    primary signal and overrides the count/age gate entirely.
     """
 
     enabled: bool = True
-    poll_interval_seconds: int = 60
-    drain_threshold_count: int = 50
-    drain_age_seconds: int = 600
+    poll_interval_seconds: int = 15
+    drain_threshold_count: int = 30
+    drain_age_seconds: int = 120
     drain_command_names: list[str] = field(
         default_factory=lambda: ["EpisodeSearch", "SeasonSearch", "MovieSearch"]
     )

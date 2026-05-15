@@ -69,9 +69,9 @@ class ArrCommandQueueYamlConfig:
     """
 
     enabled: bool = True
-    poll_interval_seconds: int = 60
-    drain_threshold_count: int = 50
-    drain_age_seconds: int = 600
+    poll_interval_seconds: int = 15
+    drain_threshold_count: int = 30
+    drain_age_seconds: int = 120
     drain_command_names: list[str] = field(
         default_factory=lambda: ["EpisodeSearch", "SeasonSearch", "MovieSearch"]
     )
@@ -168,9 +168,9 @@ def load_yaml_config(path: Path | str) -> YamlConfig:
     if a := raw.get("arr_command_queue"):
         acq = ArrCommandQueueYamlConfig(
             enabled=bool(a.get("enabled", True)),
-            poll_interval_seconds=int(a.get("poll_interval_seconds", 60)),
-            drain_threshold_count=int(a.get("drain_threshold_count", 50)),
-            drain_age_seconds=int(a.get("drain_age_seconds", 600)),
+            poll_interval_seconds=int(a.get("poll_interval_seconds", 15)),
+            drain_threshold_count=int(a.get("drain_threshold_count", 30)),
+            drain_age_seconds=int(a.get("drain_age_seconds", 120)),
             drain_command_names=list(
                 a.get(
                     "drain_command_names",
