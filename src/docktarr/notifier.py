@@ -68,6 +68,17 @@ _TEMPLATES = {
     "arr_command_queue.error": (
         "**[Docktarr]** {service} command queue probe error: {error}"
     ),
+    "arr_command_queue.burst_detected": (
+        "**[Docktarr]** {service} command burst: +{delta} drain candidates "
+        "({delta_rate}/sec, total={current_count}). Draining."
+    ),
+    "arr_scheduler.wedged": (
+        "**[Docktarr]** {service} scheduler wedged: {offenders}. "
+        "Triggering forced drain."
+    ),
+    "arr_scheduler.error": (
+        "**[Docktarr]** {service} scheduler probe error: {error}"
+    ),
 }
 
 

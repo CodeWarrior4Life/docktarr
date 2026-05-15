@@ -98,6 +98,26 @@ class ArrClient:
             return data
         return data.get("records", [])
 
+    async def list_scheduled_tasks(self) -> list[dict]:
+        """GET ``/api/v{version}/system/task`` — Sonarr/Radarr task schedule.
+
+        Used by :mod:`docktarr.arr_scheduler_health` as the **primary**
+        signal for a wedged scheduler. Each entry exposes ``name``,
+        ``interval`` (minutes), and ``lastExecution`` (ISO-8601 UTC); the
+        liveness probe computes ``overdue_ratio`` and flags critical tasks
+        that are running far past their declared cadence.
+        """
+        v = self._api_version()
+        resp = await self._client.get(
+            f"{self._url}/api/{v}/system/task",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get("records", [])
+
     async def delete_command(self, command_id: int) -> None:
         """DELETE ``/api/v{version}/command/{id}`` — cancel a queued command.
 
