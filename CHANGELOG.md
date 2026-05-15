@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.7.2 — 2026-05-14
+
+### Liveness-first design
+
+0.7.1 shipped a queue-depth signal. That reads the *symptom* (50+ stale
+``unspecified`` commands), not the *disease* (a wedged Sonarr scheduler).
+By the time queue depth crosses 50, the scheduler has already missed
+several RssSync / ImportListSync cycles — operators see the alert after
+the damage is underway.
+
+0.7.2 inverts the primary signal: a wedged scheduled task is the trigger,
+not its downstream effect.
+
+### Added
+- **`arr_scheduler_health` module — liveness probe as the PRIMARY wedge
+  signal.** Polls Sonarr/Radarr ``GET /api/v3/system/task`` every tick
+  and computes ``overdue_ratio = age_seconds / (interval_minutes * 60)``
+  for each task. Critical short-interval tasks (``Rss Sync``,
+  ``Import List Sync``, ``Refresh Monitored Downloads``,
+  ``Messaging Cleanup``) trip ``is_wedged`` when their overdue ratio
+  exceeds ``wedge_threshold`` (default 3.0×). Long-interval tasks
+  (``Backup``, ``Refresh Series``) are filtered out by allowlist — their
+  hour-to-day intervals make overdue ratios meaningless off-cycle. When
+  any critical task is wedged, the probe (a) emits
+  ``arr_scheduler.wedged``, (b) forces an immediate command-queue drain
+  via the new ``force_drain_services`` parameter, regardless of the
+  count/age gate. Composed with ``arr_command_queue`` on the same poll
+  tick so both signals correlate.
+- **Burst detector in ``arr_command_queue``.** Tracks per-service
+  drain-candidate count across ticks. If delta ≥ ``burst_threshold``
+  (default 20) AND delta-rate ≥ ``burst_rate_threshold`` (default
+  0.5/sec, i.e. >30/min), drain immediately regardless of age threshold.
+  Rationale: 891 commands in 24s = 37/sec — unmistakable, age gate is
+  too slow. Cold-start tick (no prior baseline) explicitly suppresses
+  burst detection — first observation isn't a "delta from zero".
+- **StateStore persistence for burst baseline.** Previous-tick counts +
+  timestamps are written to ``/config/state.json`` under a new
+  ``arr_burst`` envelope so a docktarr restart mid-burst doesn't reset
+  the rolling baseline. Legacy flat-shape state files are still loaded
+  for backward compatibility — the loader auto-detects the envelope via
+  an ``"indexers"`` key.
+- New events: ``arr_command_queue.burst_detected`` (warn, includes
+  ``delta`` + ``delta_rate``), ``arr_scheduler.wedged`` (warn, lists
+  offending tasks + overdue ratios), ``arr_scheduler.error`` (per-service
+  probe failure).
+- New endpoint: ``GET /health/arr_scheduler`` — per-service liveness
+  reports (tasks list, wedged_count, last_action, error).
+- ``ArrClient.list_scheduled_tasks()`` — thin wrapper around
+  ``GET /api/v{n}/system/task``.
+
+### Changed
+- **Tighter defaults to catch bursts inside a single Sonarr task cycle
+  (5 min minimum).** ``poll_interval_seconds`` 60 → 15;
+  ``drain_threshold_count`` 50 → 30; ``drain_age_seconds`` 600 → 120.
+  Combined with the burst detector and liveness probe, the wedge
+  pattern that ran 15 hours in the 2026-05-13 incident would now be
+  detected within ~5 min of onset (or immediately if the burst rate
+  trips), and fully drained within the next poll cycle.
+- New env overrides:
+  ``DOCKTARR_ARR_COMMAND_QUEUE_BURST_THRESHOLD``,
+  ``DOCKTARR_ARR_COMMAND_QUEUE_BURST_RATE_THRESHOLD``,
+  ``DOCKTARR_ARR_SCHEDULER_HEALTH_ENABLED``,
+  ``DOCKTARR_ARR_SCHEDULER_WEDGE_THRESHOLD``,
+  ``DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS``.
+- Default ``WEBHOOK_EVENTS`` expanded to include the three new events.
+
+### Notes
+- The two probes intentionally share the ``arr_command_queue:`` YAML
+  block — they're conceptually one feature ("keep the ARR scheduler
+  healthy") with two signals, and a single block keeps the operational
+  surface unified.
+- ``run_arr_command_queue`` is now called once per tick by a small
+  wrapper in ``main.py`` that runs the liveness probe first, harvests
+  ``force_drain_services``, and passes it (plus the ``StateStore``) into
+  the queue probe. ``state.save()`` is called after each tick so the
+  burst baseline survives container restarts.
+
 ## 0.7.1 — 2026-05-14
 
 ### Added
