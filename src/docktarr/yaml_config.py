@@ -76,6 +76,22 @@ class ArrCommandQueueYamlConfig:
         default_factory=lambda: ["EpisodeSearch", "SeasonSearch", "MovieSearch"]
     )
     elevated_warn_count: int = 200
+    burst_threshold: int = 20
+    burst_rate_threshold: float = 0.5
+    # Scheduler-liveness probe (sibling: arr_scheduler_health). Lives in
+    # the same YAML block to keep the operational surface unified — they
+    # are conceptually one feature ("keep the ARR scheduler healthy") with
+    # two probes.
+    scheduler_health_enabled: bool = True
+    scheduler_wedge_threshold: float = 3.0
+    scheduler_critical_tasks: list[str] = field(
+        default_factory=lambda: [
+            "Rss Sync",
+            "Import List Sync",
+            "Refresh Monitored Downloads",
+            "Messaging Cleanup",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -162,6 +178,25 @@ def load_yaml_config(path: Path | str) -> YamlConfig:
                 )
             ),
             elevated_warn_count=int(a.get("elevated_warn_count", 200)),
+            burst_threshold=int(a.get("burst_threshold", 20)),
+            burst_rate_threshold=float(a.get("burst_rate_threshold", 0.5)),
+            scheduler_health_enabled=bool(
+                a.get("scheduler_health_enabled", True)
+            ),
+            scheduler_wedge_threshold=float(
+                a.get("scheduler_wedge_threshold", 3.0)
+            ),
+            scheduler_critical_tasks=list(
+                a.get(
+                    "scheduler_critical_tasks",
+                    [
+                        "Rss Sync",
+                        "Import List Sync",
+                        "Refresh Monitored Downloads",
+                        "Messaging Cleanup",
+                    ],
+                )
+            ),
         )
 
     return YamlConfig(

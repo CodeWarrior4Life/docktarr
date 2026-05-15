@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from docktarr.arrclient import ArrClient
     from docktarr.http_health import HealthState
     from docktarr.notifier import Notifier
+    from docktarr.state import StateStore
 
 log = logging.getLogger("docktarr.arr_command_queue")
 
@@ -63,6 +64,14 @@ class ArrCommandQueueConfig:
         default_factory=lambda: ["EpisodeSearch", "SeasonSearch", "MovieSearch"]
     )
     elevated_warn_count: int = 200
+    # --- burst detector (0.7.2) -----------------------------------------
+    # If the count of drain-candidates jumped by at least ``burst_threshold``
+    # in a single poll, AND the per-second rate of that delta exceeds
+    # ``burst_rate_threshold``, drain immediately regardless of the age
+    # gate. Rationale: 891 commands in 24s = 37/sec — that pattern is
+    # unmistakable and slow defaults shouldn't let it pile up further.
+    burst_threshold: int = 20
+    burst_rate_threshold: float = 0.5  # candidates/sec
 
 
 @dataclass
@@ -75,6 +84,14 @@ class ArrCommandQueueReport:
     last_action: str  # "ok" | "drained" | "elevated" | "error"
     error: str | None = None
     sample_drained_ids: list[int] = field(default_factory=list)
+    # 0.7.2: burst-detector telemetry. ``delta`` is the change in
+    # drain-candidate count since the last tick; ``delta_rate`` is that
+    # delta divided by the elapsed seconds; ``triggered_by`` records the
+    # discriminator that fired ("age" | "burst" | "forced" | "" if no
+    # drain).
+    delta: int = 0
+    delta_rate: float = 0.0
+    triggered_by: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +103,9 @@ class ArrCommandQueueReport:
             "last_action": self.last_action,
             "error": self.error,
             "sample_drained_ids": list(self.sample_drained_ids),
+            "delta": self.delta,
+            "delta_rate": self.delta_rate,
+            "triggered_by": self.triggered_by,
         }
 
 
@@ -179,13 +199,28 @@ async def run_arr_command_queue(
     config: ArrCommandQueueConfig,
     notifier: "Notifier",
     health_state: "HealthState | None" = None,
+    state_store: "StateStore | None" = None,
+    force_drain_services: set[str] | None = None,
 ) -> list[ArrCommandQueueReport]:
-    """One-shot tick of the command-queue drainer."""
+    """One-shot tick of the command-queue drainer.
+
+    Parameters
+    ----------
+    force_drain_services
+        Services for which the count/age gate is overridden. Used by
+        :mod:`docktarr.arr_scheduler_health` to drain immediately on any
+        wedge signal even if the queue isn't yet large/old enough.
+    state_store
+        Optional :class:`docktarr.state.StateStore`. When provided, the
+        module persists per-service drain-candidate counts (timestamped)
+        so the burst detector survives docktarr restarts.
+    """
     if not config.enabled:
         return []
 
     drain_names = set(config.drain_command_names)
     now = datetime.now(timezone.utc)
+    force = force_drain_services or set()
     reports: list[ArrCommandQueueReport] = []
 
     for client in arr_clients:
@@ -220,26 +255,94 @@ async def run_arr_command_queue(
             drain_candidates[0]["_age_seconds"] if drain_candidates else None
         )
 
-        should_drain = (
+        # --- burst detector (0.7.2) -------------------------------------
+        # Compare drain-candidate count to the previous tick's count.
+        # delta_rate uses the elapsed wall time between ticks (NOT the
+        # configured poll_interval, which is the *target* cadence — actual
+        # cadence drifts) so the rate reflects reality even after
+        # docktarr restarts.
+        #
+        # Cold-start semantics: if we have no prior baseline (no state
+        # store, or the store is empty for this service), the burst
+        # detector stays silent. Rationale: the first tick after startup
+        # observes the FULL queue depth as a "delta from zero", which is
+        # not a burst — it's just an initial reading. The next tick will
+        # have a real baseline to compare against. We still record the
+        # baseline so the second tick can detect a fresh burst.
+        prev = (
+            _load_previous_burst_state(state_store, service)
+            if state_store is not None
+            else None
+        )
+        if prev and prev[1] is not None:
+            delta = len(drain_candidates) - prev[0]
+            elapsed = max(1e-6, (now - prev[1]).total_seconds())
+            delta_rate = delta / elapsed if elapsed > 0 else 0.0
+            burst_detected = (
+                delta >= config.burst_threshold
+                and delta_rate >= config.burst_rate_threshold
+            )
+        else:
+            delta = 0
+            delta_rate = 0.0
+            burst_detected = False
+
+        # Persist new count + timestamp for next tick (always, regardless
+        # of action — we want the rolling window to keep flowing).
+        if state_store is not None:
+            _save_previous_burst_state(
+                state_store, service, len(drain_candidates), now
+            )
+
+        age_drain = (
             len(drain_candidates) >= config.drain_threshold_count
             and oldest_drain_age is not None
             and oldest_drain_age >= config.drain_age_seconds
+        )
+        forced = service in force and len(drain_candidates) > 0
+
+        should_drain = age_drain or burst_detected or forced
+        triggered_by = (
+            "forced" if forced else ("burst" if burst_detected else
+            ("age" if age_drain else ""))
         )
 
         last_action = "ok"
         drained_count = 0
         sample_ids: list[int] = []
 
+        # Burst event fires BEFORE the drained event so operators see
+        # "burst → drain" causality in the log/Telegram stream.
+        if burst_detected:
+            await notifier.emit(
+                "arr_command_queue.burst_detected",
+                {
+                    "service": service,
+                    "delta": delta,
+                    "delta_rate": round(delta_rate, 2),
+                    "current_count": len(drain_candidates),
+                },
+            )
+            log.warning(
+                "arr_command_queue[%s]: burst detected (+%d in %.1fs = "
+                "%.2f/sec). Draining immediately.",
+                service,
+                delta,
+                elapsed,
+                delta_rate,
+            )
+
         if should_drain:
             ids_to_drain = [c["id"] for c in drain_candidates]
             sample_ids = ids_to_drain[:3]
             log.warning(
                 "arr_command_queue[%s]: draining %d stale %s command(s) "
-                "(trigger=unspecified, oldest %.0fs old)",
+                "(trigger=unspecified, oldest %.0fs old, triggered_by=%s)",
                 service,
                 len(ids_to_drain),
                 "/".join(sorted(drain_names)),
                 oldest_drain_age or 0.0,
+                triggered_by,
             )
             drained_count, errors = await _drain(client, ids_to_drain)
             if errors:
@@ -260,8 +363,14 @@ async def run_arr_command_queue(
                     "count": drained_count,
                     "sample_ids": sample_ids,
                     "oldest_age_seconds": int(oldest_drain_age or 0),
+                    "triggered_by": triggered_by,
                 },
             )
+            # After a drain the candidate count drops to ~0; reset the
+            # baseline so the next tick's delta isn't a huge negative
+            # number that masks the next burst.
+            if state_store is not None:
+                _save_previous_burst_state(state_store, service, 0, now)
         elif (
             len(queued) > config.elevated_warn_count
             or len(drain_candidates) > config.elevated_warn_count
@@ -287,12 +396,14 @@ async def run_arr_command_queue(
         else:
             log.debug(
                 "arr_command_queue[%s]: ok (started=%d queued=%d "
-                "drain_candidates=%d oldest=%s)",
+                "drain_candidates=%d oldest=%s delta=%+d rate=%.2f/s)",
                 service,
                 len(started),
                 len(queued),
                 len(drain_candidates),
                 f"{oldest_age:.0f}s" if oldest_age else "n/a",
+                delta,
+                delta_rate,
             )
 
         report = ArrCommandQueueReport(
@@ -304,6 +415,9 @@ async def run_arr_command_queue(
             last_action=last_action,
             error=None,
             sample_drained_ids=sample_ids,
+            delta=delta,
+            delta_rate=round(delta_rate, 4),
+            triggered_by=triggered_by,
         )
         reports.append(report)
 
@@ -313,3 +427,49 @@ async def run_arr_command_queue(
         health_state.record_arr_command_queue([r.to_dict() for r in reports])
 
     return reports
+
+
+# ---------------------------------------------------------------------------
+# StateStore persistence for burst detector
+# ---------------------------------------------------------------------------
+#
+# The burst detector needs to know the previous tick's drain-candidate
+# count, keyed by service, and that count must survive docktarr restarts
+# (otherwise a restart during an ongoing burst would reset the baseline
+# to 0 and the detector would mis-fire on the recovered count). We piggy-
+# back on the existing :class:`docktarr.state.StateStore` JSON file using
+# a private attribute namespace (``_arr_burst``); IndexerState's serialiser
+# stays untouched.
+
+
+def _load_previous_burst_state(
+    store: "StateStore | None", service: str
+) -> tuple[int, datetime | None] | None:
+    if store is None:
+        return None
+    bucket = getattr(store, "_arr_burst", None)
+    if not bucket:
+        return None
+    entry = bucket.get(service)
+    if not entry:
+        return None
+    ts = entry.get("timestamp")
+    ts_dt = None
+    if ts:
+        try:
+            ts_dt = datetime.fromisoformat(ts)
+        except ValueError:
+            ts_dt = None
+    return int(entry.get("count", 0)), ts_dt
+
+
+def _save_previous_burst_state(
+    store: "StateStore | None", service: str, count: int, when: datetime
+) -> None:
+    if store is None:
+        return
+    bucket = getattr(store, "_arr_burst", None)
+    if bucket is None:
+        bucket = {}
+        store._arr_burst = bucket  # type: ignore[attr-defined]
+    bucket[service] = {"count": count, "timestamp": when.isoformat()}

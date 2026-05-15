@@ -502,6 +502,10 @@ async def _build_scheduler_for_test(
             ArrCommandQueueConfig,
             run_arr_command_queue,
         )
+        from docktarr.arr_scheduler_health import (
+            ArrSchedulerHealthConfig,
+            run_arr_scheduler_health,
+        )
 
         _acq_cfg = ArrCommandQueueConfig(
             enabled=_acq_yaml.enabled,
@@ -510,6 +514,13 @@ async def _build_scheduler_for_test(
             drain_age_seconds=_acq_yaml.drain_age_seconds,
             drain_command_names=list(_acq_yaml.drain_command_names),
             elevated_warn_count=_acq_yaml.elevated_warn_count,
+            burst_threshold=_acq_yaml.burst_threshold,
+            burst_rate_threshold=_acq_yaml.burst_rate_threshold,
+        )
+        _sched_cfg = ArrSchedulerHealthConfig(
+            enabled=_acq_yaml.scheduler_health_enabled,
+            wedge_threshold=_acq_yaml.scheduler_wedge_threshold,
+            critical_tasks=list(_acq_yaml.scheduler_critical_tasks),
         )
 
         # Only Sonarr/Radarr expose /api/v3/command in the relevant shape;
@@ -520,12 +531,31 @@ async def _build_scheduler_for_test(
 
         if _acq_clients:
             async def _arr_command_queue_job():
+                # Liveness FIRST — wedge signal is the primary primitive
+                # and decides whether the queue probe should force-drain
+                # regardless of count/age gates. Bug-of-the-day rationale:
+                # by the time queue depth crosses 50, the scheduler has
+                # already missed several RssSync cycles; the wedge ratio
+                # trips at minute ~5 vs queue-depth at minute ~10.
+                force_services: set[str] = set()
+                if _sched_cfg.enabled:
+                    _, force_services = await run_arr_scheduler_health(
+                        arr_clients=_acq_clients,
+                        config=_sched_cfg,
+                        notifier=notifier,
+                        health_state=health_state,
+                    )
                 await run_arr_command_queue(
                     arr_clients=_acq_clients,
                     config=_acq_cfg,
                     notifier=notifier,
                     health_state=health_state,
+                    state_store=state,
+                    force_drain_services=force_services,
                 )
+                # Persist burst-state to /config/state.json so a restart
+                # mid-burst doesn't lose the baseline.
+                state.save()
 
             scheduler.add_job(
                 _arr_command_queue_job,
@@ -536,13 +566,17 @@ async def _build_scheduler_for_test(
             )
             log.info(
                 "arr_command_queue enabled (services=%s, poll=%ds, "
-                "drain_threshold=%d/%ds, drain_names=%s, elevated_warn=%d)",
+                "drain_threshold=%d/%ds, burst=%d/%.2fps, scheduler=%s "
+                "wedge=%.1fx, critical=%s)",
                 [c.name for c in _acq_clients],
                 _acq_cfg.poll_interval_seconds,
                 _acq_cfg.drain_threshold_count,
                 _acq_cfg.drain_age_seconds,
-                _acq_cfg.drain_command_names,
-                _acq_cfg.elevated_warn_count,
+                _acq_cfg.burst_threshold,
+                _acq_cfg.burst_rate_threshold,
+                "on" if _sched_cfg.enabled else "off",
+                _sched_cfg.wedge_threshold,
+                _sched_cfg.critical_tasks,
             )
 
     # --- plex_throttle (v0.7.0 2026-05-03) ---

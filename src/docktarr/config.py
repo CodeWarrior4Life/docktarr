@@ -108,7 +108,8 @@ class Config:
             "arr.restarted,arr.unreachable_threshold_restart,arr.restart_failed,"
             "imposter.detected,"
             "arr_command_queue.drained,arr_command_queue.elevated,"
-            "arr_command_queue.error",
+            "arr_command_queue.error,arr_command_queue.burst_detected,"
+            "arr_scheduler.wedged,arr_scheduler.error",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
@@ -233,6 +234,32 @@ def _apply_arr_command_queue_env(yaml_cfg: YamlConfig) -> YamlConfig:
         "DOCKTARR_ARR_COMMAND_QUEUE_ELEVATED_WARN_COUNT",
         base.elevated_warn_count,
     )
+    burst_threshold = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_BURST_THRESHOLD",
+        base.burst_threshold,
+    )
+
+    def _float(name: str, current: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return current
+        try:
+            return float(raw)
+        except ValueError:
+            return current
+
+    burst_rate = _float(
+        "DOCKTARR_ARR_COMMAND_QUEUE_BURST_RATE_THRESHOLD",
+        base.burst_rate_threshold,
+    )
+    sched_enabled = _bool_env(
+        "DOCKTARR_ARR_SCHEDULER_HEALTH_ENABLED",
+        base.scheduler_health_enabled,
+    )
+    sched_wedge = _float(
+        "DOCKTARR_ARR_SCHEDULER_WEDGE_THRESHOLD",
+        base.scheduler_wedge_threshold,
+    )
 
     names_raw = os.environ.get(
         "DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_COMMAND_NAMES", ""
@@ -242,6 +269,14 @@ def _apply_arr_command_queue_env(yaml_cfg: YamlConfig) -> YamlConfig:
     else:
         names = list(base.drain_command_names)
 
+    critical_raw = os.environ.get(
+        "DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS", ""
+    ).strip()
+    if critical_raw:
+        critical = [n.strip() for n in critical_raw.split(",") if n.strip()]
+    else:
+        critical = list(base.scheduler_critical_tasks)
+
     new_acq = ArrCommandQueueYamlConfig(
         enabled=enabled,
         poll_interval_seconds=poll,
@@ -249,5 +284,10 @@ def _apply_arr_command_queue_env(yaml_cfg: YamlConfig) -> YamlConfig:
         drain_age_seconds=age,
         drain_command_names=names,
         elevated_warn_count=elevated,
+        burst_threshold=burst_threshold,
+        burst_rate_threshold=burst_rate,
+        scheduler_health_enabled=sched_enabled,
+        scheduler_wedge_threshold=sched_wedge,
+        scheduler_critical_tasks=critical,
     )
     return dataclasses.replace(yaml_cfg, arr_command_queue=new_acq)
