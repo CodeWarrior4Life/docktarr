@@ -2,12 +2,15 @@
 
 Covers the discriminator (status='queued' AND trigger='unspecified' AND
 name IN drain_command_names) plus dual thresholds (count + age), the
-elevated-warn path, and the per-service error path.
+elevated-warn path, the per-service error path, plus 0.7.2 additions:
+burst detector, force-drain override, and StateStore persistence.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -16,12 +19,15 @@ from docktarr.arr_command_queue import (
     ArrCommandQueueConfig,
     ArrCommandQueueReport,
     _classify,
+    _load_previous_burst_state,
+    _save_previous_burst_state,
     run_arr_command_queue,
 )
 from docktarr.arrclient import ArrClient
 from docktarr.config import ArrAppConfig
 from docktarr.http_health import HealthState
 from docktarr.notifier import Notifier
+from docktarr.state import StateStore
 
 
 # ---------------------------------------------------------------------------
@@ -444,3 +450,322 @@ async def test_arrclient_delete_command_raises_on_500():
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     with pytest.raises(httpx.HTTPStatusError):
         await client.delete_command(1)
+
+
+# ---------------------------------------------------------------------------
+# 0.7.2 — burst detector + state persistence + force_drain
+# ---------------------------------------------------------------------------
+
+
+def _store(tmp_path: Path) -> StateStore:
+    s = StateStore(path=tmp_path / "state.json")
+    s.load()
+    return s
+
+
+@pytest.mark.asyncio
+async def test_first_tick_no_burst_even_with_large_queue(tmp_path):
+    # Cold-start observation: 60 stale-but-young drain candidates. Without a
+    # prior baseline, burst detector MUST NOT fire — we don't know whether
+    # these arrived in 1s or 1h.
+    cmds = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=1) for i in range(60)
+    ]
+    deleted: list[int] = []
+    client = _make_client(cmds, deleted=deleted)
+    notifier, events = _make_notifier()
+    store = _store(tmp_path)
+    reports = await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store,
+    )
+    assert deleted == []
+    assert reports[0].drained_count == 0
+    bursts = [e for e in events if e["event"] == "arr_command_queue.burst_detected"]
+    assert bursts == []
+
+
+@pytest.mark.asyncio
+async def test_burst_detector_fires_on_sharp_delta(tmp_path):
+    # Tick 1: 5 commands.
+    # Tick 2: 60 commands ~15s later -> delta=55, rate ~3.7/sec.
+    # Even though age threshold isn't met (1m old), the burst should drain.
+    deleted: list[int] = []
+    notifier, events = _make_notifier()
+    store = _store(tmp_path)
+
+    # --- Tick 1 ---
+    cmds_t1 = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=0.5) for i in range(5)
+    ]
+    client1 = _make_client(cmds_t1, deleted=deleted)
+    await run_arr_command_queue(
+        arr_clients=[client1],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store,
+    )
+    assert deleted == []
+    bursts = [e for e in events if e["event"] == "arr_command_queue.burst_detected"]
+    assert bursts == []
+
+    # Force the persisted timestamp back ~15s so the next tick has a
+    # plausible elapsed window without sleep().
+    _save_previous_burst_state(
+        store,
+        "Sonarr",
+        5,
+        datetime.now(timezone.utc) - timedelta(seconds=15),
+    )
+
+    # --- Tick 2 ---
+    cmds_t2 = [
+        _cmd(100 + i, trigger="unspecified", queued_minutes_ago=0.25)
+        for i in range(60)
+    ]
+    client2 = _make_client(cmds_t2, deleted=deleted)
+    reports = await run_arr_command_queue(
+        arr_clients=[client2],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store,
+    )
+
+    bursts = [e for e in events if e["event"] == "arr_command_queue.burst_detected"]
+    drained = [e for e in events if e["event"] == "arr_command_queue.drained"]
+    assert len(bursts) == 1
+    assert bursts[0]["payload"]["delta"] == 55
+    assert bursts[0]["payload"]["delta_rate"] >= 3.0
+    assert len(drained) == 1
+    assert drained[0]["payload"]["triggered_by"] == "burst"
+    assert reports[0].drained_count == 60
+    assert reports[0].triggered_by == "burst"
+
+
+@pytest.mark.asyncio
+async def test_slow_growth_does_not_trigger_burst(tmp_path):
+    # 5/tick over 10 ticks, each tick 15s apart. Cumulative reaches 50 but
+    # rate per tick is 5/15s = 0.33/sec < 0.5/sec gate. Must NOT burst.
+    deleted: list[int] = []
+    notifier, events = _make_notifier()
+    store = _store(tmp_path)
+
+    cumulative = 0
+    for tick in range(10):
+        cumulative += 5
+        cmds = [
+            _cmd(i, trigger="unspecified", queued_minutes_ago=0.3)
+            for i in range(cumulative)
+        ]
+        client = _make_client(cmds, deleted=deleted)
+        # Backdate the previous baseline so the rate window is 15s.
+        prev = _load_previous_burst_state(store, "Sonarr")
+        if prev is not None:
+            _save_previous_burst_state(
+                store,
+                "Sonarr",
+                prev[0],
+                datetime.now(timezone.utc) - timedelta(seconds=15),
+            )
+        await run_arr_command_queue(
+            arr_clients=[client],
+            config=ArrCommandQueueConfig(),
+            notifier=notifier,
+            state_store=store,
+        )
+
+    bursts = [e for e in events if e["event"] == "arr_command_queue.burst_detected"]
+    drained = [e for e in events if e["event"] == "arr_command_queue.drained"]
+    # 0 bursts despite reaching 50 cumulative.
+    assert bursts == []
+    # On the last tick, 50 candidates + young age = age gate NOT met; this
+    # assertion is the meaningful one — no immediate drain from the slow
+    # ramp. (The elevated-warn path may still fire above 200; here we stay
+    # below.)
+    assert drained == []
+
+
+@pytest.mark.asyncio
+async def test_force_drain_overrides_count_and_age_gates(tmp_path):
+    # 3 young commands — too few, too young — but force_drain_services=Sonarr.
+    deleted: list[int] = []
+    cmds = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=0.1) for i in range(3)
+    ]
+    client = _make_client(cmds, deleted=deleted)
+    notifier, events = _make_notifier()
+    reports = await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        force_drain_services={"Sonarr"},
+    )
+    assert len(deleted) == 3
+    assert reports[0].drained_count == 3
+    assert reports[0].triggered_by == "forced"
+    drained = [e for e in events if e["event"] == "arr_command_queue.drained"]
+    assert drained[0]["payload"]["triggered_by"] == "forced"
+
+
+@pytest.mark.asyncio
+async def test_force_drain_with_empty_queue_is_noop(tmp_path):
+    # force_drain set but no candidates -> no DELETE calls, no drain event.
+    client = _make_client([])
+    notifier, events = _make_notifier()
+    reports = await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        force_drain_services={"Sonarr"},
+    )
+    assert reports[0].drained_count == 0
+    assert reports[0].last_action == "ok"
+    drained = [e for e in events if e["event"] == "arr_command_queue.drained"]
+    assert drained == []
+
+
+@pytest.mark.asyncio
+async def test_wedge_and_burst_on_same_tick_single_drain(tmp_path):
+    # Both signals present: scheduler wedged AND burst detected. We should
+    # emit BOTH events (burst_detected + drained), but only ONE drain pass
+    # should execute (60 DELETEs total, not 120).
+    notifier, events = _make_notifier()
+    store = _store(tmp_path)
+
+    # Seed prior baseline so burst trips on this tick.
+    _save_previous_burst_state(
+        store,
+        "Sonarr",
+        0,
+        datetime.now(timezone.utc) - timedelta(seconds=15),
+    )
+
+    deleted: list[int] = []
+    cmds = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=0.5) for i in range(60)
+    ]
+    client = _make_client(cmds, deleted=deleted)
+    reports = await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store,
+        force_drain_services={"Sonarr"},
+    )
+
+    # Burst trips first; force_drain confirms. Single drain pass.
+    bursts = [e for e in events if e["event"] == "arr_command_queue.burst_detected"]
+    drained = [e for e in events if e["event"] == "arr_command_queue.drained"]
+    assert len(bursts) == 1
+    assert len(drained) == 1
+    assert len(deleted) == 60  # not 120
+    assert reports[0].drained_count == 60
+    # triggered_by reports the highest-priority discriminator: forced > burst > age
+    assert reports[0].triggered_by == "forced"
+
+
+@pytest.mark.asyncio
+async def test_state_store_persists_burst_baseline_across_restart(tmp_path):
+    # 1. First docktarr "session": observe 25 candidates, save.
+    cmds = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=0.1) for i in range(25)
+    ]
+    client = _make_client(cmds)
+    notifier, _ = _make_notifier()
+    path = tmp_path / "state.json"
+    store1 = StateStore(path=path)
+    store1.load()
+    await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store1,
+    )
+    store1.save()
+    # File on disk must contain the burst bucket.
+    raw = json.loads(path.read_text())
+    assert "arr_burst" in raw
+    assert raw["arr_burst"]["Sonarr"]["count"] == 25
+
+    # 2. Simulate restart: brand-new StateStore loads same path.
+    store2 = StateStore(path=path)
+    store2.load()
+    prev = _load_previous_burst_state(store2, "Sonarr")
+    assert prev is not None
+    assert prev[0] == 25
+    assert prev[1] is not None
+
+
+def test_state_store_burst_save_load_roundtrip(tmp_path):
+    path = tmp_path / "state.json"
+    store = StateStore(path=path)
+    store.load()
+    ts = datetime.now(timezone.utc)
+    _save_previous_burst_state(store, "Sonarr", 42, ts)
+    _save_previous_burst_state(store, "Radarr", 7, ts)
+    store.save()
+
+    store2 = StateStore(path=path)
+    store2.load()
+    sonarr = _load_previous_burst_state(store2, "Sonarr")
+    radarr = _load_previous_burst_state(store2, "Radarr")
+    assert sonarr == (42, ts)
+    assert radarr == (7, ts)
+
+
+def test_state_store_load_legacy_flat_shape_still_works(tmp_path):
+    # Existing /config/state.json on Cyril's deployments uses the legacy
+    # flat shape {definition_name: IndexerState}. Loader must tolerate it.
+    path = tmp_path / "state.json"
+    legacy = {
+        "1337x": {
+            "definition_name": "1337x",
+            "prowlarr_id": 5,
+            "status": "active",
+            "last_tested": None,
+            "failure_count": 0,
+            "first_failure": None,
+            "last_failure": None,
+        }
+    }
+    path.write_text(json.dumps(legacy))
+    store = StateStore(path=path)
+    store.load()
+    assert store.get("1337x") is not None
+    assert _load_previous_burst_state(store, "Sonarr") is None
+
+
+@pytest.mark.asyncio
+async def test_drain_resets_burst_baseline_to_zero(tmp_path):
+    # After a drain the queue should be near-empty. The baseline must reset
+    # to 0 so the next tick's delta is a true delta, not a huge negative
+    # number that masks a fresh burst.
+    notifier, _ = _make_notifier()
+    store = _store(tmp_path)
+    deleted: list[int] = []
+
+    # Seed: prior baseline of 0 in the past + 60 candidates aged 5m means
+    # age-gate fires (drain_age_seconds=120 default).
+    _save_previous_burst_state(
+        store,
+        "Sonarr",
+        0,
+        datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+    cmds = [
+        _cmd(i, trigger="unspecified", queued_minutes_ago=5) for i in range(60)
+    ]
+    client = _make_client(cmds, deleted=deleted)
+    await run_arr_command_queue(
+        arr_clients=[client],
+        config=ArrCommandQueueConfig(),
+        notifier=notifier,
+        state_store=store,
+    )
+    assert len(deleted) == 60
+    # Baseline reset.
+    prev = _load_previous_burst_state(store, "Sonarr")
+    assert prev is not None
+    assert prev[0] == 0
