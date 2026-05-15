@@ -490,6 +490,61 @@ async def _build_scheduler_for_test(
                 sr_cooldown,
             )
 
+    # --- arr_command_queue (0.7.1) ---
+    # Watches Sonarr/Radarr /api/v3/command and auto-drains runaway
+    # external-API search batches (trigger=unspecified EpisodeSearch /
+    # SeasonSearch / MovieSearch) before they wedge the scheduler. Driven
+    # by the 2026-05-13 incident where 891 unspecified-trigger EpisodeSearch
+    # commands blocked RssSync + ImportListSync for 15 hours.
+    _acq_yaml = config.yaml.arr_command_queue
+    if _acq_yaml and _acq_yaml.enabled and arr_clients:
+        from docktarr.arr_command_queue import (
+            ArrCommandQueueConfig,
+            run_arr_command_queue,
+        )
+
+        _acq_cfg = ArrCommandQueueConfig(
+            enabled=_acq_yaml.enabled,
+            poll_interval_seconds=_acq_yaml.poll_interval_seconds,
+            drain_threshold_count=_acq_yaml.drain_threshold_count,
+            drain_age_seconds=_acq_yaml.drain_age_seconds,
+            drain_command_names=list(_acq_yaml.drain_command_names),
+            elevated_warn_count=_acq_yaml.elevated_warn_count,
+        )
+
+        # Only Sonarr/Radarr expose /api/v3/command in the relevant shape;
+        # Readarr/Bookshelf use v1 with a different command set. Scope to v3.
+        _acq_clients = [
+            c for c in arr_clients.values() if c.name in ("Sonarr", "Radarr")
+        ]
+
+        if _acq_clients:
+            async def _arr_command_queue_job():
+                await run_arr_command_queue(
+                    arr_clients=_acq_clients,
+                    config=_acq_cfg,
+                    notifier=notifier,
+                    health_state=health_state,
+                )
+
+            scheduler.add_job(
+                _arr_command_queue_job,
+                "interval",
+                seconds=_acq_cfg.poll_interval_seconds,
+                id="arr_command_queue",
+                next_run_time=datetime.now(timezone.utc),
+            )
+            log.info(
+                "arr_command_queue enabled (services=%s, poll=%ds, "
+                "drain_threshold=%d/%ds, drain_names=%s, elevated_warn=%d)",
+                [c.name for c in _acq_clients],
+                _acq_cfg.poll_interval_seconds,
+                _acq_cfg.drain_threshold_count,
+                _acq_cfg.drain_age_seconds,
+                _acq_cfg.drain_command_names,
+                _acq_cfg.elevated_warn_count,
+            )
+
     # --- plex_throttle (v0.7.0 2026-05-03) ---
     # Plex-aware qBit download cap. When Plex has a stream, throttle qBit so it
     # doesn't compete for bandwidth/disk. Idempotent + grace-windowed. Disabled

@@ -56,6 +56,18 @@ _TEMPLATES = {
     "service.external_route_restart_failed": (
         "**[Docktarr]** {name} proxy ({proxy_container}) restart FAILED: {error}"
     ),
+    "arr_command_queue.drained": (
+        "**[Docktarr]** {service} command queue drained: {count} stale "
+        "EpisodeSearch (trigger=unspecified, oldest {oldest_age_seconds}s old). "
+        "Scheduler unwedged. sample_ids={sample_ids}"
+    ),
+    "arr_command_queue.elevated": (
+        "**[Docktarr]** {service} command queue elevated: {count} queued "
+        "(oldest {oldest_age_seconds}s). Below drain threshold — warn only."
+    ),
+    "arr_command_queue.error": (
+        "**[Docktarr]** {service} command queue probe error: {error}"
+    ),
 }
 
 

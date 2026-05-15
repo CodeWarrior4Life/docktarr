@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.1 — 2026-05-14
+
+### Added
+- **`arr_command_queue` module — drains runaway Sonarr/Radarr command
+  batches.** Watches `/api/v3/command` and auto-cancels stale
+  `trigger=unspecified` `EpisodeSearch` / `SeasonSearch` / `MovieSearch`
+  bursts before they wedge the scheduler. Discriminator preserves
+  `trigger=manual` (UI clicks) and `trigger=scheduled` (Sonarr's own
+  heartbeats); only the API-posted "no trigger field" pattern is drained.
+  Dual safeguards: drain only fires when ≥50 candidates AND oldest is ≥10
+  min old (both tunable). Driven by the 2026-05-13 incident where 891
+  unspecified-trigger `EpisodeSearch` commands queued in 24s blocked
+  `RssSync` + `ImportListSync` for 15 hours until manual `xargs -P 16 curl
+  -X DELETE` cleared them.
+- New events: `arr_command_queue.drained` (info, includes count + 3
+  sample ids), `arr_command_queue.elevated` (warn, queue > 200 but
+  thresholds not met — investigate the source), `arr_command_queue.error`
+  (error, per-service probe failure).
+- New endpoint: `GET /health/arr_command_queue` returns the latest
+  per-service report (service, queued_count, started_count,
+  oldest_queued_age_seconds, drained_count, last_action, error,
+  sample_drained_ids).
+- `ArrClient.list_commands()` and `ArrClient.delete_command(id)` —
+  thin wrappers around `GET /api/v{n}/command` and `DELETE
+  /api/v{n}/command/{id}`. Scoped to Sonarr/Radarr (v3) in the scheduler
+  wire-up.
+- New YAML section `arr_command_queue:` and env overrides
+  `DOCKTARR_ARR_COMMAND_QUEUE_ENABLED`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_POLL_INTERVAL_SECONDS`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_THRESHOLD_COUNT`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_AGE_SECONDS`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_COMMAND_NAMES`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_ELEVATED_WARN_COUNT`. Enabled by default
+  with conservative thresholds (50 candidates / 600s); set
+  `DOCKTARR_ARR_COMMAND_QUEUE_ENABLED=false` to disable.
+
 ## 0.7.0 — 2026-05-03
 
 ### Added

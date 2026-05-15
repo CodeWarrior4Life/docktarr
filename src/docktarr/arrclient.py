@@ -79,5 +79,39 @@ class ArrClient:
             )
             return False
 
+    async def list_commands(self) -> list[dict]:
+        """GET ``/api/v{version}/command`` — Sonarr/Radarr task queue.
+
+        Used by ``arr_command_queue`` to detect and drain runaway external-API
+        search batches. Returns the raw list verbatim so the consumer can
+        partition by ``status`` / ``trigger`` / ``name`` without losing fields.
+        """
+        v = self._api_version()
+        resp = await self._client.get(
+            f"{self._url}/api/{v}/command",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # The endpoint returns a bare list, not a {records: [...]} envelope.
+        if isinstance(data, list):
+            return data
+        return data.get("records", [])
+
+    async def delete_command(self, command_id: int) -> None:
+        """DELETE ``/api/v{version}/command/{id}`` — cancel a queued command.
+
+        Used by ``arr_command_queue`` to drain stale ``trigger=unspecified``
+        EpisodeSearch/SeasonSearch/MovieSearch batches that wedge the
+        scheduler. Raises ``httpx.HTTPStatusError`` on non-2xx so the caller
+        can record per-id failures.
+        """
+        v = self._api_version()
+        resp = await self._client.delete(
+            f"{self._url}/api/{v}/command/{command_id}",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+
     async def close(self) -> None:
         await self._client.aclose()

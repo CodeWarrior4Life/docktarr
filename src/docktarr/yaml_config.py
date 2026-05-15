@@ -59,10 +59,31 @@ class PermissionHealthConfig:
 
 
 @dataclass(frozen=True)
+class ArrCommandQueueYamlConfig:
+    """YAML-side config for :mod:`docktarr.arr_command_queue`.
+
+    Kept separate from ``ArrCommandQueueConfig`` (the dataclass the module
+    actually consumes) so the yaml parser stays a pure data-conversion layer
+    with no runtime imports. ``Config.from_env_and_yaml`` resolves env-var
+    overrides (``DOCKTARR_ARR_COMMAND_QUEUE_*``) on top of this.
+    """
+
+    enabled: bool = True
+    poll_interval_seconds: int = 60
+    drain_threshold_count: int = 50
+    drain_age_seconds: int = 600
+    drain_command_names: list[str] = field(
+        default_factory=lambda: ["EpisodeSearch", "SeasonSearch", "MovieSearch"]
+    )
+    elevated_warn_count: int = 200
+
+
+@dataclass(frozen=True)
 class YamlConfig:
     hw_capability: HWCapabilityConfig | None = None
     media_container_audit: MediaContainerAuditConfig | None = None
     permission_health: PermissionHealthConfig | None = None
+    arr_command_queue: ArrCommandQueueYamlConfig | None = None
 
 
 def load_yaml_config(path: Path | str) -> YamlConfig:
@@ -127,4 +148,25 @@ def load_yaml_config(path: Path | str) -> YamlConfig:
             fix_credential_ref=p_.get("fix_credential_ref"),
         )
 
-    return YamlConfig(hw_capability=hw, media_container_audit=mca, permission_health=ph)
+    acq = None
+    if a := raw.get("arr_command_queue"):
+        acq = ArrCommandQueueYamlConfig(
+            enabled=bool(a.get("enabled", True)),
+            poll_interval_seconds=int(a.get("poll_interval_seconds", 60)),
+            drain_threshold_count=int(a.get("drain_threshold_count", 50)),
+            drain_age_seconds=int(a.get("drain_age_seconds", 600)),
+            drain_command_names=list(
+                a.get(
+                    "drain_command_names",
+                    ["EpisodeSearch", "SeasonSearch", "MovieSearch"],
+                )
+            ),
+            elevated_warn_count=int(a.get("elevated_warn_count", 200)),
+        )
+
+    return YamlConfig(
+        hw_capability=hw,
+        media_container_audit=mca,
+        permission_health=ph,
+        arr_command_queue=acq,
+    )
