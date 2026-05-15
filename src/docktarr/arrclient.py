@@ -79,5 +79,59 @@ class ArrClient:
             )
             return False
 
+    async def list_commands(self) -> list[dict]:
+        """GET ``/api/v{version}/command`` — Sonarr/Radarr task queue.
+
+        Used by ``arr_command_queue`` to detect and drain runaway external-API
+        search batches. Returns the raw list verbatim so the consumer can
+        partition by ``status`` / ``trigger`` / ``name`` without losing fields.
+        """
+        v = self._api_version()
+        resp = await self._client.get(
+            f"{self._url}/api/{v}/command",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # The endpoint returns a bare list, not a {records: [...]} envelope.
+        if isinstance(data, list):
+            return data
+        return data.get("records", [])
+
+    async def list_scheduled_tasks(self) -> list[dict]:
+        """GET ``/api/v{version}/system/task`` — Sonarr/Radarr task schedule.
+
+        Used by :mod:`docktarr.arr_scheduler_health` as the **primary**
+        signal for a wedged scheduler. Each entry exposes ``name``,
+        ``interval`` (minutes), and ``lastExecution`` (ISO-8601 UTC); the
+        liveness probe computes ``overdue_ratio`` and flags critical tasks
+        that are running far past their declared cadence.
+        """
+        v = self._api_version()
+        resp = await self._client.get(
+            f"{self._url}/api/{v}/system/task",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get("records", [])
+
+    async def delete_command(self, command_id: int) -> None:
+        """DELETE ``/api/v{version}/command/{id}`` — cancel a queued command.
+
+        Used by ``arr_command_queue`` to drain stale ``trigger=unspecified``
+        EpisodeSearch/SeasonSearch/MovieSearch batches that wedge the
+        scheduler. Raises ``httpx.HTTPStatusError`` on non-2xx so the caller
+        can record per-id failures.
+        """
+        v = self._api_version()
+        resp = await self._client.delete(
+            f"{self._url}/api/{v}/command/{command_id}",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+
     async def close(self) -> None:
         await self._client.aclose()

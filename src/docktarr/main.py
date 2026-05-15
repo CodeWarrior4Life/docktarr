@@ -490,6 +490,95 @@ async def _build_scheduler_for_test(
                 sr_cooldown,
             )
 
+    # --- arr_command_queue (0.7.1) ---
+    # Watches Sonarr/Radarr /api/v3/command and auto-drains runaway
+    # external-API search batches (trigger=unspecified EpisodeSearch /
+    # SeasonSearch / MovieSearch) before they wedge the scheduler. Driven
+    # by the 2026-05-13 incident where 891 unspecified-trigger EpisodeSearch
+    # commands blocked RssSync + ImportListSync for 15 hours.
+    _acq_yaml = config.yaml.arr_command_queue
+    if _acq_yaml and _acq_yaml.enabled and arr_clients:
+        from docktarr.arr_command_queue import (
+            ArrCommandQueueConfig,
+            run_arr_command_queue,
+        )
+        from docktarr.arr_scheduler_health import (
+            ArrSchedulerHealthConfig,
+            run_arr_scheduler_health,
+        )
+
+        _acq_cfg = ArrCommandQueueConfig(
+            enabled=_acq_yaml.enabled,
+            poll_interval_seconds=_acq_yaml.poll_interval_seconds,
+            drain_threshold_count=_acq_yaml.drain_threshold_count,
+            drain_age_seconds=_acq_yaml.drain_age_seconds,
+            drain_command_names=list(_acq_yaml.drain_command_names),
+            elevated_warn_count=_acq_yaml.elevated_warn_count,
+            burst_threshold=_acq_yaml.burst_threshold,
+            burst_rate_threshold=_acq_yaml.burst_rate_threshold,
+        )
+        _sched_cfg = ArrSchedulerHealthConfig(
+            enabled=_acq_yaml.scheduler_health_enabled,
+            wedge_threshold=_acq_yaml.scheduler_wedge_threshold,
+            critical_tasks=list(_acq_yaml.scheduler_critical_tasks),
+        )
+
+        # Only Sonarr/Radarr expose /api/v3/command in the relevant shape;
+        # Readarr/Bookshelf use v1 with a different command set. Scope to v3.
+        _acq_clients = [
+            c for c in arr_clients.values() if c.name in ("Sonarr", "Radarr")
+        ]
+
+        if _acq_clients:
+            async def _arr_command_queue_job():
+                # Liveness FIRST — wedge signal is the primary primitive
+                # and decides whether the queue probe should force-drain
+                # regardless of count/age gates. Bug-of-the-day rationale:
+                # by the time queue depth crosses 50, the scheduler has
+                # already missed several RssSync cycles; the wedge ratio
+                # trips at minute ~5 vs queue-depth at minute ~10.
+                force_services: set[str] = set()
+                if _sched_cfg.enabled:
+                    _, force_services = await run_arr_scheduler_health(
+                        arr_clients=_acq_clients,
+                        config=_sched_cfg,
+                        notifier=notifier,
+                        health_state=health_state,
+                    )
+                await run_arr_command_queue(
+                    arr_clients=_acq_clients,
+                    config=_acq_cfg,
+                    notifier=notifier,
+                    health_state=health_state,
+                    state_store=state,
+                    force_drain_services=force_services,
+                )
+                # Persist burst-state to /config/state.json so a restart
+                # mid-burst doesn't lose the baseline.
+                state.save()
+
+            scheduler.add_job(
+                _arr_command_queue_job,
+                "interval",
+                seconds=_acq_cfg.poll_interval_seconds,
+                id="arr_command_queue",
+                next_run_time=datetime.now(timezone.utc),
+            )
+            log.info(
+                "arr_command_queue enabled (services=%s, poll=%ds, "
+                "drain_threshold=%d/%ds, burst=%d/%.2fps, scheduler=%s "
+                "wedge=%.1fx, critical=%s)",
+                [c.name for c in _acq_clients],
+                _acq_cfg.poll_interval_seconds,
+                _acq_cfg.drain_threshold_count,
+                _acq_cfg.drain_age_seconds,
+                _acq_cfg.burst_threshold,
+                _acq_cfg.burst_rate_threshold,
+                "on" if _sched_cfg.enabled else "off",
+                _sched_cfg.wedge_threshold,
+                _sched_cfg.critical_tasks,
+            )
+
     # --- plex_throttle (v0.7.0 2026-05-03) ---
     # Plex-aware qBit download cap. When Plex has a stream, throttle qBit so it
     # doesn't compete for bandwidth/disk. Idempotent + grace-windowed. Disabled

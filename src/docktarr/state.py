@@ -79,8 +79,29 @@ class StateStore:
             return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            self._data = {k: IndexerState.from_dict(v) for k, v in raw.items()}
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        except json.JSONDecodeError as exc:
+            log.warning("Corrupt state file, backing up and starting fresh: %s", exc)
+            backup = self._path.with_suffix(".json.bak")
+            self._path.rename(backup)
+            self._data = {}
+            return
+        # 0.7.2: state file now supports two top-level shapes:
+        #   - legacy flat map  { definition_name: IndexerState.to_dict, ... }
+        #   - new envelope     { "indexers": {...}, "arr_burst": {...} }
+        # Detect the envelope by looking for a reserved key; fall back to
+        # legacy for backward-compat with existing /config/state.json files.
+        try:
+            if isinstance(raw, dict) and "indexers" in raw:
+                indexers = raw.get("indexers", {})
+                self._data = {
+                    k: IndexerState.from_dict(v) for k, v in indexers.items()
+                }
+                burst = raw.get("arr_burst")
+                if isinstance(burst, dict):
+                    self._arr_burst = burst
+            else:
+                self._data = {k: IndexerState.from_dict(v) for k, v in raw.items()}
+        except (KeyError, ValueError) as exc:
             log.warning("Corrupt state file, backing up and starting fresh: %s", exc)
             backup = self._path.with_suffix(".json.bak")
             self._path.rename(backup)
@@ -88,7 +109,15 @@ class StateStore:
 
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {k: v.to_dict() for k, v in self._data.items()}
+        indexers = {k: v.to_dict() for k, v in self._data.items()}
+        # If any extension bucket is present, emit the new envelope shape;
+        # otherwise stay legacy-flat so older docktarr versions can still
+        # consume our state file in the event of a downgrade.
+        burst = getattr(self, "_arr_burst", None)
+        if burst:
+            payload: dict = {"indexers": indexers, "arr_burst": burst}
+        else:
+            payload = indexers
         self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def get(self, definition_name: str) -> IndexerState | None:

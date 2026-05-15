@@ -7,7 +7,11 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
-from docktarr.yaml_config import YamlConfig, load_yaml_config
+from docktarr.yaml_config import (
+    ArrCommandQueueYamlConfig,
+    YamlConfig,
+    load_yaml_config,
+)
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([smhd]?)$", re.IGNORECASE)
 
@@ -102,7 +106,10 @@ class Config:
             "qbit.restarted,qbit.stale_namespace_restart,"
             "qbit.unreachable_threshold_restart,qbit.restart_failed,"
             "arr.restarted,arr.unreachable_threshold_restart,arr.restart_failed,"
-            "imposter.detected",
+            "imposter.detected,"
+            "arr_command_queue.drained,arr_command_queue.elevated,"
+            "arr_command_queue.error,arr_command_queue.burst_detected,"
+            "arr_scheduler.wedged,arr_scheduler.error",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
@@ -180,4 +187,107 @@ class Config:
     ) -> Config:
         base = cls.from_env()
         yaml_cfg = load_yaml_config(yaml_path)
+        yaml_cfg = _apply_arr_command_queue_env(yaml_cfg)
         return dataclasses.replace(base, yaml=yaml_cfg)
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _apply_arr_command_queue_env(yaml_cfg: YamlConfig) -> YamlConfig:
+    """Layer ``DOCKTARR_ARR_COMMAND_QUEUE_*`` env vars on top of YAML.
+
+    Env vars override YAML; YAML overrides dataclass defaults. If neither
+    YAML nor any env var is set, the module runs with defaults (enabled,
+    60s poll, 50/600s drain thresholds).
+    """
+    base = yaml_cfg.arr_command_queue or ArrCommandQueueYamlConfig()
+
+    enabled = _bool_env("DOCKTARR_ARR_COMMAND_QUEUE_ENABLED", base.enabled)
+
+    def _int(name: str, current: int) -> int:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return current
+        try:
+            return int(raw)
+        except ValueError:
+            return current
+
+    poll = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_POLL_INTERVAL_SECONDS",
+        base.poll_interval_seconds,
+    )
+    threshold = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_THRESHOLD_COUNT",
+        base.drain_threshold_count,
+    )
+    age = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_AGE_SECONDS",
+        base.drain_age_seconds,
+    )
+    elevated = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_ELEVATED_WARN_COUNT",
+        base.elevated_warn_count,
+    )
+    burst_threshold = _int(
+        "DOCKTARR_ARR_COMMAND_QUEUE_BURST_THRESHOLD",
+        base.burst_threshold,
+    )
+
+    def _float(name: str, current: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return current
+        try:
+            return float(raw)
+        except ValueError:
+            return current
+
+    burst_rate = _float(
+        "DOCKTARR_ARR_COMMAND_QUEUE_BURST_RATE_THRESHOLD",
+        base.burst_rate_threshold,
+    )
+    sched_enabled = _bool_env(
+        "DOCKTARR_ARR_SCHEDULER_HEALTH_ENABLED",
+        base.scheduler_health_enabled,
+    )
+    sched_wedge = _float(
+        "DOCKTARR_ARR_SCHEDULER_WEDGE_THRESHOLD",
+        base.scheduler_wedge_threshold,
+    )
+
+    names_raw = os.environ.get(
+        "DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_COMMAND_NAMES", ""
+    ).strip()
+    if names_raw:
+        names = [n.strip() for n in names_raw.split(",") if n.strip()]
+    else:
+        names = list(base.drain_command_names)
+
+    critical_raw = os.environ.get(
+        "DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS", ""
+    ).strip()
+    if critical_raw:
+        critical = [n.strip() for n in critical_raw.split(",") if n.strip()]
+    else:
+        critical = list(base.scheduler_critical_tasks)
+
+    new_acq = ArrCommandQueueYamlConfig(
+        enabled=enabled,
+        poll_interval_seconds=poll,
+        drain_threshold_count=threshold,
+        drain_age_seconds=age,
+        drain_command_names=names,
+        elevated_warn_count=elevated,
+        burst_threshold=burst_threshold,
+        burst_rate_threshold=burst_rate,
+        scheduler_health_enabled=sched_enabled,
+        scheduler_wedge_threshold=sched_wedge,
+        scheduler_critical_tasks=critical,
+    )
+    return dataclasses.replace(yaml_cfg, arr_command_queue=new_acq)

@@ -1,5 +1,118 @@
 # Changelog
 
+## 0.7.2 — 2026-05-14
+
+### Liveness-first design
+
+0.7.1 shipped a queue-depth signal. That reads the *symptom* (50+ stale
+``unspecified`` commands), not the *disease* (a wedged Sonarr scheduler).
+By the time queue depth crosses 50, the scheduler has already missed
+several RssSync / ImportListSync cycles — operators see the alert after
+the damage is underway.
+
+0.7.2 inverts the primary signal: a wedged scheduled task is the trigger,
+not its downstream effect.
+
+### Added
+- **`arr_scheduler_health` module — liveness probe as the PRIMARY wedge
+  signal.** Polls Sonarr/Radarr ``GET /api/v3/system/task`` every tick
+  and computes ``overdue_ratio = age_seconds / (interval_minutes * 60)``
+  for each task. Critical short-interval tasks (``Rss Sync``,
+  ``Import List Sync``, ``Refresh Monitored Downloads``,
+  ``Messaging Cleanup``) trip ``is_wedged`` when their overdue ratio
+  exceeds ``wedge_threshold`` (default 3.0×). Long-interval tasks
+  (``Backup``, ``Refresh Series``) are filtered out by allowlist — their
+  hour-to-day intervals make overdue ratios meaningless off-cycle. When
+  any critical task is wedged, the probe (a) emits
+  ``arr_scheduler.wedged``, (b) forces an immediate command-queue drain
+  via the new ``force_drain_services`` parameter, regardless of the
+  count/age gate. Composed with ``arr_command_queue`` on the same poll
+  tick so both signals correlate.
+- **Burst detector in ``arr_command_queue``.** Tracks per-service
+  drain-candidate count across ticks. If delta ≥ ``burst_threshold``
+  (default 20) AND delta-rate ≥ ``burst_rate_threshold`` (default
+  0.5/sec, i.e. >30/min), drain immediately regardless of age threshold.
+  Rationale: 891 commands in 24s = 37/sec — unmistakable, age gate is
+  too slow. Cold-start tick (no prior baseline) explicitly suppresses
+  burst detection — first observation isn't a "delta from zero".
+- **StateStore persistence for burst baseline.** Previous-tick counts +
+  timestamps are written to ``/config/state.json`` under a new
+  ``arr_burst`` envelope so a docktarr restart mid-burst doesn't reset
+  the rolling baseline. Legacy flat-shape state files are still loaded
+  for backward compatibility — the loader auto-detects the envelope via
+  an ``"indexers"`` key.
+- New events: ``arr_command_queue.burst_detected`` (warn, includes
+  ``delta`` + ``delta_rate``), ``arr_scheduler.wedged`` (warn, lists
+  offending tasks + overdue ratios), ``arr_scheduler.error`` (per-service
+  probe failure).
+- New endpoint: ``GET /health/arr_scheduler`` — per-service liveness
+  reports (tasks list, wedged_count, last_action, error).
+- ``ArrClient.list_scheduled_tasks()`` — thin wrapper around
+  ``GET /api/v{n}/system/task``.
+
+### Changed
+- **Tighter defaults to catch bursts inside a single Sonarr task cycle
+  (5 min minimum).** ``poll_interval_seconds`` 60 → 15;
+  ``drain_threshold_count`` 50 → 30; ``drain_age_seconds`` 600 → 120.
+  Combined with the burst detector and liveness probe, the wedge
+  pattern that ran 15 hours in the 2026-05-13 incident would now be
+  detected within ~5 min of onset (or immediately if the burst rate
+  trips), and fully drained within the next poll cycle.
+- New env overrides:
+  ``DOCKTARR_ARR_COMMAND_QUEUE_BURST_THRESHOLD``,
+  ``DOCKTARR_ARR_COMMAND_QUEUE_BURST_RATE_THRESHOLD``,
+  ``DOCKTARR_ARR_SCHEDULER_HEALTH_ENABLED``,
+  ``DOCKTARR_ARR_SCHEDULER_WEDGE_THRESHOLD``,
+  ``DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS``.
+- Default ``WEBHOOK_EVENTS`` expanded to include the three new events.
+
+### Notes
+- The two probes intentionally share the ``arr_command_queue:`` YAML
+  block — they're conceptually one feature ("keep the ARR scheduler
+  healthy") with two signals, and a single block keeps the operational
+  surface unified.
+- ``run_arr_command_queue`` is now called once per tick by a small
+  wrapper in ``main.py`` that runs the liveness probe first, harvests
+  ``force_drain_services``, and passes it (plus the ``StateStore``) into
+  the queue probe. ``state.save()`` is called after each tick so the
+  burst baseline survives container restarts.
+
+## 0.7.1 — 2026-05-14
+
+### Added
+- **`arr_command_queue` module — drains runaway Sonarr/Radarr command
+  batches.** Watches `/api/v3/command` and auto-cancels stale
+  `trigger=unspecified` `EpisodeSearch` / `SeasonSearch` / `MovieSearch`
+  bursts before they wedge the scheduler. Discriminator preserves
+  `trigger=manual` (UI clicks) and `trigger=scheduled` (Sonarr's own
+  heartbeats); only the API-posted "no trigger field" pattern is drained.
+  Dual safeguards: drain only fires when ≥50 candidates AND oldest is ≥10
+  min old (both tunable). Driven by the 2026-05-13 incident where 891
+  unspecified-trigger `EpisodeSearch` commands queued in 24s blocked
+  `RssSync` + `ImportListSync` for 15 hours until manual `xargs -P 16 curl
+  -X DELETE` cleared them.
+- New events: `arr_command_queue.drained` (info, includes count + 3
+  sample ids), `arr_command_queue.elevated` (warn, queue > 200 but
+  thresholds not met — investigate the source), `arr_command_queue.error`
+  (error, per-service probe failure).
+- New endpoint: `GET /health/arr_command_queue` returns the latest
+  per-service report (service, queued_count, started_count,
+  oldest_queued_age_seconds, drained_count, last_action, error,
+  sample_drained_ids).
+- `ArrClient.list_commands()` and `ArrClient.delete_command(id)` —
+  thin wrappers around `GET /api/v{n}/command` and `DELETE
+  /api/v{n}/command/{id}`. Scoped to Sonarr/Radarr (v3) in the scheduler
+  wire-up.
+- New YAML section `arr_command_queue:` and env overrides
+  `DOCKTARR_ARR_COMMAND_QUEUE_ENABLED`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_POLL_INTERVAL_SECONDS`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_THRESHOLD_COUNT`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_AGE_SECONDS`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_DRAIN_COMMAND_NAMES`,
+  `DOCKTARR_ARR_COMMAND_QUEUE_ELEVATED_WARN_COUNT`. Enabled by default
+  with conservative thresholds (50 candidates / 600s); set
+  `DOCKTARR_ARR_COMMAND_QUEUE_ENABLED=false` to disable.
+
 ## 0.7.0 — 2026-05-03
 
 ### Added
