@@ -17,6 +17,7 @@ CATEGORY_MAP = {
     "tv-sonarr": "Sonarr",
     "sonarr": "Sonarr",
     "radarr": "Radarr",
+    "lidarr": "Lidarr",
     "readarr": "Readarr",
     "bookshelf": "Bookshelf",
 }

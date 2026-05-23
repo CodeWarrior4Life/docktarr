@@ -120,6 +120,7 @@ class Config:
         for prefix, name in [
             ("SONARR", "Sonarr"),
             ("RADARR", "Radarr"),
+            ("LIDARR", "Lidarr"),
             ("READARR", "Readarr"),
             ("BOOKSHELF", "Bookshelf"),
         ]:
