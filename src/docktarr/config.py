@@ -112,7 +112,8 @@ class Config:
             "arr_scheduler.wedged,arr_scheduler.error,"
             "pid_pressure.breach,pid_pressure.zombies_total,"
             "pid_pressure.restarted,pid_pressure.restart_failed,"
-            "plex_singleton.split_brain",
+            "plex_singleton.split_brain,"
+            "plex_connections_guard.corrected,plex_connections_guard.stale",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None

@@ -759,6 +759,61 @@ async def _build_scheduler_for_test(
             _plex_singleton_interval,
         )
 
+    # --- plex_connections_guard (v0.8.0 2026-06-21) ---
+    # Self-healing Plex server-discovery guard. Born from the Zion->Cypher
+    # migration where Cypher's Plex still published the dead Zion IP
+    # (customConnections="http://10.0.0.16:32400") to plex.tv — clients tried
+    # the dead address and hung ("spinning"). For each reachable endpoint, if
+    # NONE of its published customConnections URLs is reachable, it replaces
+    # customConnections with the live endpoint and toggles
+    # PublishServerOnPlexOnlineKey 0->1 to force a re-publish. Idempotent: does
+    # nothing if a published URL is already reachable. auto_fix default-on.
+    _plex_cg_enabled = os.environ.get(
+        "PLEX_CONNECTIONS_GUARD_ENABLED", "true"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if _plex_cg_enabled:
+        from docktarr.plex_connections_guard import (
+            PlexConnectionsGuardConfig,
+            run_plex_connections_guard,
+        )
+
+        # Endpoints: PLEX_CONNECTIONS_ENDPOINTS, falling back to
+        # PLEX_SINGLETON_ENDPOINTS (same default set), then the hardcoded default.
+        _plex_cg_endpoints_raw = (
+            os.environ.get("PLEX_CONNECTIONS_ENDPOINTS", "").strip()
+            or os.environ.get("PLEX_SINGLETON_ENDPOINTS", "").strip()
+            or "http://10.0.0.16:32400,http://10.0.0.111:32400"
+        )
+        _plex_cg_endpoints = [
+            e.strip() for e in _plex_cg_endpoints_raw.split(",") if e.strip()
+        ]
+        _plex_cg_auto_fix = os.environ.get(
+            "PLEX_CONNECTIONS_GUARD_AUTO_FIX", "true"
+        ).strip().lower() not in ("0", "false", "no", "off", "")
+        _plex_cg_cfg = PlexConnectionsGuardConfig(
+            enabled=True,
+            endpoints=_plex_cg_endpoints,
+            auto_fix=_plex_cg_auto_fix,
+            token=os.environ.get("PLEX_TOKEN", "").strip(),
+        )
+        _plex_cg_interval = os.environ.get("PLEX_CONNECTIONS_GUARD_INTERVAL", "5m")
+
+        async def _plex_connections_guard_job():
+            await run_plex_connections_guard(_plex_cg_cfg, notifier)
+
+        scheduler.add_job(
+            _plex_connections_guard_job,
+            "interval",
+            seconds=parse_duration(_plex_cg_interval).total_seconds(),
+            id="plex_connections_guard",
+        )
+        log.info(
+            "plex_connections_guard enabled (endpoints=%s, auto_fix=%s, interval=%s)",
+            _plex_cg_endpoints,
+            _plex_cg_auto_fix,
+            _plex_cg_interval,
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

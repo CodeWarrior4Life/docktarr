@@ -2,7 +2,7 @@
 
 ## 0.8.0 — 2026-06-21
 
-Two new health-check modules, each born from a real incident on 2026-06-21.
+Three new Plex/health modules, each born from a real incident on 2026-06-21.
 
 ### Added
 - **`pid_pressure` module — zombie / PID-pressure watchdog.** Born from the
@@ -43,6 +43,34 @@ Two new health-check modules, each born from a real incident on 2026-06-21.
   (`PLEX_SINGLETON_ENDPOINTS`, default Zion + Cypher); unreachable endpoints
   drop out of the comparison set rather than erroring. Wired into `main.py` via
   env vars (`PLEX_SINGLETON_*`), default-on, default interval 5m.
+- **`plex_connections_guard` module — self-healing Plex server-discovery
+  (`customConnections`) guard.** Born from the Zion->Cypher Plex migration:
+  Cypher's Plex was live at `10.0.0.111` but its `customConnections` pref still
+  pinned `http://10.0.0.16:32400` (Zion's now-dead IP, with a trailing space).
+  `customConnections` is the comma-separated list of URLs Plex publishes to
+  plex.tv for client discovery, so plex.tv advertised the DEAD address; clients
+  tried it and hung ("spinning"). The module probes each configured endpoint via
+  `PlexClient.identity()`; for every reachable (live) endpoint E it reads E's
+  published `customConnections`, splits it (comma-separated, whitespace-trimmed)
+  and probes each entry for reachability. **Drift** = E is live but NONE of its
+  published URLs is reachable — clients can't discover a working address. On
+  drift, if `auto_fix` (default **on**, the operator explicitly wanted automatic
+  correction): PUT `customConnections` = E's own URL (replacing the stale/dead
+  set), then toggle `PublishServerOnPlexOnlineKey` `0`->`1` to force a
+  re-publish — exactly the manual fix that worked — and emit
+  `plex_connections_guard.corrected`. With `auto_fix=false` it emits
+  `plex_connections_guard.stale` (alert only). **Conservative / idempotent:** it
+  ONLY replaces `customConnections` when the published set contains no reachable
+  URL; if any published URL already resolves (the server publishes a working
+  address — possibly a legitimately-configured remote URL) it does nothing — no
+  PUT, no re-publish, no churn. Endpoint list configurable via
+  `PLEX_CONNECTIONS_ENDPOINTS`, falling back to `PLEX_SINGLETON_ENDPOINTS`, then
+  the Zion+Cypher default. Every network/PUT call is wrapped — an unreachable
+  endpoint is skipped silently and the check never raises into the scheduler.
+  Wired into `main.py` (`PLEX_CONNECTIONS_GUARD_*`), default-on, default
+  interval 5m. Backed by a new `PlexClient.get_preferences()` helper (parses the
+  `<Setting id=.. value=..>` shape of GET `/:/prefs`). Events:
+  `plex_connections_guard.corrected`, `plex_connections_guard.stale`.
 - **`DockerManager.list_running_containers()` and `DockerManager.top()`** — new
   docker-socket primitives backing `pid_pressure`. `top()` uses the Engine
   `/containers/{id}/top` endpoint with `-eo pid,ppid,stat,comm` to expose per-
@@ -51,8 +79,10 @@ Two new health-check modules, each born from a real incident on 2026-06-21.
   `<MediaContainer>`).
 
 ### Changed
-- Default `WEBHOOK_EVENTS` now includes the five new event names so both
-  modules' alerts are delivered out of the box.
+- Default `WEBHOOK_EVENTS` now includes the seven new event names (`pid_pressure.*`,
+  `plex_singleton.split_brain`, `plex_connections_guard.corrected`,
+  `plex_connections_guard.stale`) so all three modules' alerts are delivered out
+  of the box.
 
 ## 0.7.2 — 2026-05-14
 

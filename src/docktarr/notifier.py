@@ -103,6 +103,17 @@ _TEMPLATES = {
         "Clients will bind non-deterministically and may land on the weaker "
         "host. Disable all but one."
     ),
+    "plex_connections_guard.corrected": (
+        "**[Docktarr]** Plex discovery healed on **{endpoint}**: "
+        "customConnections was `{old_customConnections}` (no reachable address) "
+        "— set to `{new_customConnections}` and forced a re-publish. Clients "
+        "can now discover the live server."
+    ),
+    "plex_connections_guard.stale": (
+        "**[Docktarr]** Plex discovery STALE on **{endpoint}**: customConnections "
+        "`{old_customConnections}` publishes no reachable address (expected "
+        "`{expected}`). Auto-fix disabled — clients may hang. Fix manually."
+    ),
 }
 
 
