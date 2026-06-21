@@ -120,3 +120,30 @@ class DockerManager:
             return c.attrs.get("Mounts") or []
 
         return await asyncio.to_thread(_inspect)
+
+    async def list_running_containers(self) -> list[str]:
+        """Return the names of all currently-running containers."""
+
+        def _list():
+            return [c.name for c in self._client.containers.list()]
+
+        return await asyncio.to_thread(_list)
+
+    async def top(self, name: str, ps_args: str = "-eo pid,ppid,stat,comm") -> dict:
+        """Return ``docker top`` output for a container.
+
+        Uses the Docker Engine ``/containers/{id}/top`` endpoint (the same data
+        as the ``docker top`` CLI), which lists the container's processes *as
+        seen on the host* — including their STAT codes. Returns the raw Docker
+        dict ``{"Titles": [...], "Processes": [[...], ...]}``.
+
+        ``ps_args`` selects the columns; the default asks for pid, ppid, stat
+        (process state, where ``Z`` == zombie/defunct) and comm. Falls back to
+        whatever the daemon returns if the args are unsupported on the host.
+        """
+
+        def _top():
+            c = self._client.containers.get(name)
+            return c.top(ps_args=ps_args)
+
+        return await asyncio.to_thread(_top)

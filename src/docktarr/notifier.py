@@ -79,6 +79,41 @@ _TEMPLATES = {
     "arr_scheduler.error": (
         "**[Docktarr]** {service} scheduler probe error: {error}"
     ),
+    "pid_pressure.breach": (
+        "**[Docktarr]** PID pressure: container **{container}** has "
+        "{pid_count} processes / {zombie_count} zombies "
+        "(warn pid>={pid_warn}, zombie>={zombie_warn}). {cause}"
+    ),
+    "pid_pressure.zombies_total": (
+        "**[Docktarr]** PID pressure: host zombie total {zombie_total} "
+        ">= {threshold}. A container is leaking defunct processes — find the "
+        "one with no init (add `init: true`)."
+    ),
+    "pid_pressure.restarted": (
+        "**[Docktarr]** PID pressure: container **{container}** restarted "
+        "({pid_count} pids >= hard cap {hard_cap}). {cause}"
+    ),
+    "pid_pressure.restart_failed": (
+        "**[Docktarr]** PID pressure: restart of **{container}** FAILED "
+        "({pid_count} pids): {error}"
+    ),
+    "plex_singleton.split_brain": (
+        "**[Docktarr]** Split-brain Plex: {count} live instances share "
+        "machineIdentifier {machine_identifier} (endpoints: {endpoints}). "
+        "Clients will bind non-deterministically and may land on the weaker "
+        "host. Disable all but one."
+    ),
+    "plex_connections_guard.corrected": (
+        "**[Docktarr]** Plex discovery healed on **{endpoint}**: "
+        "customConnections was `{old_customConnections}` (no reachable address) "
+        "— set to `{new_customConnections}` and forced a re-publish. Clients "
+        "can now discover the live server."
+    ),
+    "plex_connections_guard.stale": (
+        "**[Docktarr]** Plex discovery STALE on **{endpoint}**: customConnections "
+        "`{old_customConnections}` publishes no reachable address (expected "
+        "`{expected}`). Auto-fix disabled — clients may hang. Fix manually."
+    ),
 }
 
 

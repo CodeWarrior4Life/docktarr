@@ -648,6 +648,172 @@ async def _build_scheduler_for_test(
             plex_throttle_cfg.grace,
         )
 
+    # --- pid_pressure (v0.8.0 2026-06-21) ---
+    # Zombie / PID-pressure watchdog. Born from the surplusrecovery-harvester-1
+    # incident: a bare-interpreter PID 1 (no init) leaked 439 chrome zombies
+    # over six weeks. Reads `docker top` per running container for pid + zombie
+    # (STAT=Z) counts; alert-only by default (PID_PRESSURE_AUTO_RESTART=false).
+    _pid_pressure_enabled = os.environ.get(
+        "PID_PRESSURE_ENABLED", "true"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if _pid_pressure_enabled:
+        from docktarr.pid_pressure import (
+            PidPressureConfig,
+            PidPressureState,
+            run_pid_pressure,
+        )
+
+        if docker_mgr is None:
+            try:
+                docker_mgr = DockerManager()
+            except Exception as exc:
+                # No docker socket (e.g. test/CI host) — degrade to disabled
+                # rather than crash startup. pid_pressure needs docker access.
+                log.warning(
+                    "pid_pressure: docker unavailable, disabling (%s)", exc
+                )
+                docker_mgr = None
+
+    if _pid_pressure_enabled and docker_mgr is not None:
+        _pid_pressure_cfg = PidPressureConfig(
+            enabled=True,
+            container_pid_warn=int(os.environ.get("PID_PRESSURE_CONTAINER_PID_WARN", "200")),
+            zombie_warn_total=int(os.environ.get("PID_PRESSURE_ZOMBIE_WARN_TOTAL", "50")),
+            zombie_warn_per_container=int(
+                os.environ.get("PID_PRESSURE_ZOMBIE_WARN_PER_CONTAINER", "30")
+            ),
+            auto_restart=os.environ.get("PID_PRESSURE_AUTO_RESTART", "false")
+            .strip()
+            .lower()
+            not in ("0", "false", "no", "off", ""),
+            debounce=int(os.environ.get("PID_PRESSURE_DEBOUNCE", "2")),
+        )
+        _pid_pressure_state = PidPressureState()
+        _pid_pressure_interval = os.environ.get("PID_PRESSURE_INTERVAL", "10m")
+
+        async def _pid_pressure_job():
+            await run_pid_pressure(
+                docker_mgr,
+                notifier,
+                _pid_pressure_cfg,
+                state=_pid_pressure_state,
+            )
+
+        scheduler.add_job(
+            _pid_pressure_job,
+            "interval",
+            seconds=parse_duration(_pid_pressure_interval).total_seconds(),
+            id="pid_pressure",
+        )
+        log.info(
+            "pid_pressure enabled (pid_warn=%d, zombie_warn=%d/container %d/host, "
+            "auto_restart=%s, debounce=%d, interval=%s)",
+            _pid_pressure_cfg.container_pid_warn,
+            _pid_pressure_cfg.zombie_warn_per_container,
+            _pid_pressure_cfg.zombie_warn_total,
+            _pid_pressure_cfg.auto_restart,
+            _pid_pressure_cfg.debounce,
+            _pid_pressure_interval,
+        )
+
+    # --- plex_singleton (v0.8.0 2026-06-21) ---
+    # Split-brain Plex detection. Born from the incident where a Zion Plex and a
+    # Cypher Plex ran simultaneously sharing one machineIdentifier — clients
+    # bound non-deterministically and landed on the weaker host. Queries each
+    # endpoint's /identity and alerts if 2+ reachable endpoints share an ID.
+    _plex_singleton_enabled = os.environ.get(
+        "PLEX_SINGLETON_ENABLED", "true"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if _plex_singleton_enabled:
+        from docktarr.plex_singleton import (
+            PlexSingletonConfig,
+            run_plex_singleton,
+        )
+
+        _ps_endpoints_raw = os.environ.get(
+            "PLEX_SINGLETON_ENDPOINTS",
+            "http://10.0.0.16:32400,http://10.0.0.111:32400",
+        ).strip()
+        _ps_endpoints = [
+            e.strip() for e in _ps_endpoints_raw.split(",") if e.strip()
+        ]
+        _plex_singleton_cfg = PlexSingletonConfig(
+            enabled=True,
+            endpoints=_ps_endpoints,
+            token=os.environ.get("PLEX_TOKEN", "").strip(),
+        )
+        _plex_singleton_interval = os.environ.get("PLEX_SINGLETON_INTERVAL", "5m")
+
+        async def _plex_singleton_job():
+            await run_plex_singleton(_plex_singleton_cfg, notifier)
+
+        scheduler.add_job(
+            _plex_singleton_job,
+            "interval",
+            seconds=parse_duration(_plex_singleton_interval).total_seconds(),
+            id="plex_singleton",
+        )
+        log.info(
+            "plex_singleton enabled (endpoints=%s, interval=%s)",
+            _ps_endpoints,
+            _plex_singleton_interval,
+        )
+
+    # --- plex_connections_guard (v0.8.0 2026-06-21) ---
+    # Self-healing Plex server-discovery guard. Born from the Zion->Cypher
+    # migration where Cypher's Plex still published the dead Zion IP
+    # (customConnections="http://10.0.0.16:32400") to plex.tv — clients tried
+    # the dead address and hung ("spinning"). For each reachable endpoint, if
+    # NONE of its published customConnections URLs is reachable, it replaces
+    # customConnections with the live endpoint and toggles
+    # PublishServerOnPlexOnlineKey 0->1 to force a re-publish. Idempotent: does
+    # nothing if a published URL is already reachable. auto_fix default-on.
+    _plex_cg_enabled = os.environ.get(
+        "PLEX_CONNECTIONS_GUARD_ENABLED", "true"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if _plex_cg_enabled:
+        from docktarr.plex_connections_guard import (
+            PlexConnectionsGuardConfig,
+            run_plex_connections_guard,
+        )
+
+        # Endpoints: PLEX_CONNECTIONS_ENDPOINTS, falling back to
+        # PLEX_SINGLETON_ENDPOINTS (same default set), then the hardcoded default.
+        _plex_cg_endpoints_raw = (
+            os.environ.get("PLEX_CONNECTIONS_ENDPOINTS", "").strip()
+            or os.environ.get("PLEX_SINGLETON_ENDPOINTS", "").strip()
+            or "http://10.0.0.16:32400,http://10.0.0.111:32400"
+        )
+        _plex_cg_endpoints = [
+            e.strip() for e in _plex_cg_endpoints_raw.split(",") if e.strip()
+        ]
+        _plex_cg_auto_fix = os.environ.get(
+            "PLEX_CONNECTIONS_GUARD_AUTO_FIX", "true"
+        ).strip().lower() not in ("0", "false", "no", "off", "")
+        _plex_cg_cfg = PlexConnectionsGuardConfig(
+            enabled=True,
+            endpoints=_plex_cg_endpoints,
+            auto_fix=_plex_cg_auto_fix,
+            token=os.environ.get("PLEX_TOKEN", "").strip(),
+        )
+        _plex_cg_interval = os.environ.get("PLEX_CONNECTIONS_GUARD_INTERVAL", "5m")
+
+        async def _plex_connections_guard_job():
+            await run_plex_connections_guard(_plex_cg_cfg, notifier)
+
+        scheduler.add_job(
+            _plex_connections_guard_job,
+            "interval",
+            seconds=parse_duration(_plex_cg_interval).total_seconds(),
+            id="plex_connections_guard",
+        )
+        log.info(
+            "plex_connections_guard enabled (endpoints=%s, auto_fix=%s, interval=%s)",
+            _plex_cg_endpoints,
+            _plex_cg_auto_fix,
+            _plex_cg_interval,
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

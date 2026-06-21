@@ -58,6 +58,19 @@ class PlexClient:
         )
         return r.status_code
 
+    async def identity(self) -> dict:
+        """Return the server's ``/identity`` attributes (machineIdentifier, etc.).
+
+        ``/identity`` is unauthenticated on most Plex installs, but we pass the
+        token anyway (harmless when ignored). Plex returns XML; we parse the
+        flat attrs off the ``<MediaContainer>`` element.
+        """
+        r = await self._http.get(
+            f"{self._base}/identity", params={"X-Plex-Token": self._token}
+        )
+        r.raise_for_status()
+        return _parse_identity(r.text)
+
     async def active_sessions(self) -> int:
         r = await self._http.get(
             f"{self._base}/status/sessions", params={"X-Plex-Token": self._token}
@@ -65,6 +78,21 @@ class PlexClient:
         r.raise_for_status()
         m = re.search(r'size="(\d+)"', r.text)
         return int(m.group(1)) if m else 0
+
+    async def get_preferences(self) -> PlexPreferences:
+        """GET ``/:/prefs`` and parse the flat attrs off ``<Setting .../>`` rows.
+
+        Plex returns a ``<MediaContainer>`` of ``<Setting id="..." value="..."/>``
+        elements (NOT the on-disk Preferences.xml flat-attr shape that
+        :func:`parse_preferences_xml` handles). We map ``id -> value``. Useful
+        for reading runtime prefs like ``customConnections`` or
+        ``PublishServerOnPlexOnlineKey`` over the wire.
+        """
+        r = await self._http.get(
+            f"{self._base}/:/prefs", params={"X-Plex-Token": self._token}
+        )
+        r.raise_for_status()
+        return PlexPreferences(token=self._token, attrs=_parse_settings(r.text))
 
     async def set_preference(self, key: str, value: str) -> int:
         r = await self._http.put(
@@ -75,6 +103,33 @@ class PlexClient:
 
     async def close(self):
         await self._http.aclose()
+
+
+def _parse_identity(xml: str) -> dict:
+    """Parse Plex ``/identity`` XML — flat attrs on ``<MediaContainer>``."""
+    start = xml.find("<MediaContainer")
+    if start < 0:
+        return {}
+    end = xml.find(">", start)
+    if end < 0:
+        return {}
+    head = xml[start + len("<MediaContainer") : end]
+    return {m.group(1): m.group(2) for m in _ATTR_RE.finditer(head)}
+
+
+def _parse_settings(xml: str) -> dict[str, str]:
+    """Parse the GET ``/:/prefs`` response — ``<Setting id="x" value="y"/>`` rows.
+
+    Returns a ``{id: value}`` map. Tolerant to attribute order and extra attrs
+    (type, default, enumValues, etc.).
+    """
+    out: dict[str, str] = {}
+    for m in re.finditer(r"<Setting\b([^>]*?)/?>", xml):
+        attrs = {a.group(1): a.group(2) for a in _ATTR_RE.finditer(m.group(1))}
+        sid = attrs.get("id")
+        if sid is not None:
+            out[sid] = attrs.get("value", "")
+    return out
 
 
 def _parse_sections(xml: str) -> list[dict]:
