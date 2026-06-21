@@ -58,6 +58,19 @@ class PlexClient:
         )
         return r.status_code
 
+    async def identity(self) -> dict:
+        """Return the server's ``/identity`` attributes (machineIdentifier, etc.).
+
+        ``/identity`` is unauthenticated on most Plex installs, but we pass the
+        token anyway (harmless when ignored). Plex returns XML; we parse the
+        flat attrs off the ``<MediaContainer>`` element.
+        """
+        r = await self._http.get(
+            f"{self._base}/identity", params={"X-Plex-Token": self._token}
+        )
+        r.raise_for_status()
+        return _parse_identity(r.text)
+
     async def active_sessions(self) -> int:
         r = await self._http.get(
             f"{self._base}/status/sessions", params={"X-Plex-Token": self._token}
@@ -75,6 +88,18 @@ class PlexClient:
 
     async def close(self):
         await self._http.aclose()
+
+
+def _parse_identity(xml: str) -> dict:
+    """Parse Plex ``/identity`` XML — flat attrs on ``<MediaContainer>``."""
+    start = xml.find("<MediaContainer")
+    if start < 0:
+        return {}
+    end = xml.find(">", start)
+    if end < 0:
+        return {}
+    head = xml[start + len("<MediaContainer") : end]
+    return {m.group(1): m.group(2) for m in _ATTR_RE.finditer(head)}
 
 
 def _parse_sections(xml: str) -> list[dict]:

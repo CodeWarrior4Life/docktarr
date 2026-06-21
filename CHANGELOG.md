@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.8.0 — 2026-06-21
+
+Two new health-check modules, each born from a real incident on 2026-06-21.
+
+### Added
+- **`pid_pressure` module — zombie / PID-pressure watchdog.** Born from the
+  `surplusrecovery-harvester-1` incident: a container ran `python` as PID 1
+  with no init system. A bare interpreter as PID 1 does not reap its children,
+  so every short-lived `chrome` subprocess it spawned became a `<defunct>`
+  (state `Z`) zombie. Over six weeks 439 zombies accumulated, exhausting the
+  host process table and tripping QTS "RAM disk" alerts; the fix was
+  `init: true` (tini). The watchdog reads `docker top` (the Engine
+  `/containers/{id}/top` endpoint) per running container to derive a `pid_count`
+  and a `zombie_count` (rows whose STAT starts with `Z`) — no SSH or `/proc`
+  parsing needed, host-OS-agnostic. A container breaches when its PID count
+  exceeds `container_pid_warn` (default 200) OR its zombie count exceeds
+  `zombie_warn_per_container` (default 30); a host-wide `zombie_warn_total`
+  (default 50) fires independently for death-by-a-thousand-cuts across many
+  containers. Alerts are gated by `debounce` (default 2 consecutive breaching
+  ticks) so transient worker bursts don't page. The breach alert names the
+  offending container, its pid/zombie counts, and the likely cause
+  (`add 'init: true'`). Default behavior is **ALERT-ONLY**; `auto_restart`
+  (default `false`) is opt-in and, even when enabled, only restarts a container
+  that is over the *hard cap* (`2× container_pid_warn`). Wired into `main.py`
+  via env vars (`PID_PRESSURE_*`), default-on, default interval 10m. Construction
+  of the DockerManager is defensive — a host with no docker socket downgrades
+  the module to disabled rather than crashing startup. Events:
+  `pid_pressure.breach`, `pid_pressure.zombies_total`, `pid_pressure.restarted`,
+  `pid_pressure.restart_failed`.
+- **`plex_singleton` module — split-brain Plex detection.** Born from the
+  split-brain incident: two Plex containers ran simultaneously — one on Zion
+  (10.0.0.16) and one on Cypher (10.0.0.111) — sharing the SAME
+  `machineIdentifier` (`984febb...`). Plex clients discover servers by
+  machineIdentifier, so with two live endpoints advertising one ID, clients
+  bound non-deterministically; binding to the weaker Zion box caused buffering.
+  The module queries each configured endpoint's `/identity` (reusing
+  `PlexClient`, with a new `identity()` helper), groups reachable endpoints by
+  machineIdentifier, and emits `plex_singleton.split_brain` when 2+ distinct
+  reachable endpoints share one ID — naming the colliding endpoints and telling
+  the operator to disable all but one. Endpoint list is configurable
+  (`PLEX_SINGLETON_ENDPOINTS`, default Zion + Cypher); unreachable endpoints
+  drop out of the comparison set rather than erroring. Wired into `main.py` via
+  env vars (`PLEX_SINGLETON_*`), default-on, default interval 5m.
+- **`DockerManager.list_running_containers()` and `DockerManager.top()`** — new
+  docker-socket primitives backing `pid_pressure`. `top()` uses the Engine
+  `/containers/{id}/top` endpoint with `-eo pid,ppid,stat,comm` to expose per-
+  container process state (including zombie STAT codes).
+- **`PlexClient.identity()`** — fetches and parses `/identity` (flat attrs on
+  `<MediaContainer>`).
+
+### Changed
+- Default `WEBHOOK_EVENTS` now includes the five new event names so both
+  modules' alerts are delivered out of the box.
+
 ## 0.7.2 — 2026-05-14
 
 ### Liveness-first design

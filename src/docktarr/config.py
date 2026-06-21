@@ -109,7 +109,10 @@ class Config:
             "imposter.detected,"
             "arr_command_queue.drained,arr_command_queue.elevated,"
             "arr_command_queue.error,arr_command_queue.burst_detected,"
-            "arr_scheduler.wedged,arr_scheduler.error",
+            "arr_scheduler.wedged,arr_scheduler.error,"
+            "pid_pressure.breach,pid_pressure.zombies_total,"
+            "pid_pressure.restarted,pid_pressure.restart_failed,"
+            "plex_singleton.split_brain",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
