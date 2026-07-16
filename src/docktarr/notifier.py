@@ -76,9 +76,7 @@ _TEMPLATES = {
         "**[Docktarr]** {service} scheduler wedged: {offenders}. "
         "Triggering forced drain."
     ),
-    "arr_scheduler.error": (
-        "**[Docktarr]** {service} scheduler probe error: {error}"
-    ),
+    "arr_scheduler.error": ("**[Docktarr]** {service} scheduler probe error: {error}"),
     "pid_pressure.breach": (
         "**[Docktarr]** PID pressure: container **{container}** has "
         "{pid_count} processes / {zombie_count} zombies "
@@ -96,6 +94,27 @@ _TEMPLATES = {
     "pid_pressure.restart_failed": (
         "**[Docktarr]** PID pressure: restart of **{container}** FAILED "
         "({pid_count} pids): {error}"
+    ),
+    "artwork_health.consumer_disabled": (
+        "**[Docktarr]** Artwork guard: **{service}** Kodi (XBMC) / Emby metadata "
+        "consumer is DISABLED ({detail}). Plex/Jellyfin poster.jpg / fanart.jpg / "
+        ".nfo sidecars will NOT be written to disk."
+    ),
+    "artwork_health.consumer_reenabled": (
+        "**[Docktarr]** Artwork guard: re-enabled the Kodi (XBMC) / Emby metadata "
+        "consumer on **{service}**. Artwork will be written on the next refresh/import."
+    ),
+    "artwork_health.consumer_images_disabled": (
+        "**[Docktarr]** Artwork guard: **{service}** Kodi (XBMC) / Emby consumer is "
+        "enabled but one or more image toggles (series/season/episode or movie "
+        "images) are OFF — some artwork will still be skipped."
+    ),
+    "artwork_health.artwork_missing": (
+        "**[Docktarr]** Artwork spot-check: **{service}** has {missing}/{checked} "
+        "recently-added items missing poster/fanart on disk (sample: {samples})."
+    ),
+    "artwork_health.error": (
+        "**[Docktarr]** Artwork guard probe error on **{service}**: {error}"
     ),
     "plex_singleton.split_brain": (
         "**[Docktarr]** Split-brain Plex: {count} live instances share "

@@ -530,6 +530,7 @@ async def _build_scheduler_for_test(
         ]
 
         if _acq_clients:
+
             async def _arr_command_queue_job():
                 # Liveness FIRST — wedge signal is the primary primitive
                 # and decides whether the queue probe should force-drain
@@ -669,16 +670,18 @@ async def _build_scheduler_for_test(
             except Exception as exc:
                 # No docker socket (e.g. test/CI host) — degrade to disabled
                 # rather than crash startup. pid_pressure needs docker access.
-                log.warning(
-                    "pid_pressure: docker unavailable, disabling (%s)", exc
-                )
+                log.warning("pid_pressure: docker unavailable, disabling (%s)", exc)
                 docker_mgr = None
 
     if _pid_pressure_enabled and docker_mgr is not None:
         _pid_pressure_cfg = PidPressureConfig(
             enabled=True,
-            container_pid_warn=int(os.environ.get("PID_PRESSURE_CONTAINER_PID_WARN", "200")),
-            zombie_warn_total=int(os.environ.get("PID_PRESSURE_ZOMBIE_WARN_TOTAL", "50")),
+            container_pid_warn=int(
+                os.environ.get("PID_PRESSURE_CONTAINER_PID_WARN", "200")
+            ),
+            zombie_warn_total=int(
+                os.environ.get("PID_PRESSURE_ZOMBIE_WARN_TOTAL", "50")
+            ),
             zombie_warn_per_container=int(
                 os.environ.get("PID_PRESSURE_ZOMBIE_WARN_PER_CONTAINER", "30")
             ),
@@ -734,9 +737,7 @@ async def _build_scheduler_for_test(
             "PLEX_SINGLETON_ENDPOINTS",
             "http://10.0.0.16:32400,http://10.0.0.111:32400",
         ).strip()
-        _ps_endpoints = [
-            e.strip() for e in _ps_endpoints_raw.split(",") if e.strip()
-        ]
+        _ps_endpoints = [e.strip() for e in _ps_endpoints_raw.split(",") if e.strip()]
         _plex_singleton_cfg = PlexSingletonConfig(
             enabled=True,
             endpoints=_ps_endpoints,
@@ -812,6 +813,101 @@ async def _build_scheduler_for_test(
             _plex_cg_endpoints,
             _plex_cg_auto_fix,
             _plex_cg_interval,
+        )
+
+    # --- artwork_health (v0.9.0 2026-07-15) ---
+    # Consumer-drift guard + artwork presence spot-check. Born from the
+    # 2026-07-15 incident: Sonarr/Radarr's "Kodi (XBMC) / Emby" (XbmcMetadata)
+    # metadata consumer was disabled, so no poster.jpg / fanart.jpg / .nfo were
+    # written to disk and Plex/Jellyfin showed blank artwork. Each tick GETs
+    # /api/v3/metadata per arr, re-enables the consumer if it drifted off
+    # (auto_heal default on — safe + reversible), and (if a DockerManager is
+    # available) docker-exec spot-checks the N most-recently-added items for
+    # poster/fanart on disk. OFF by default — enable via ARTWORK_HEALTH_ENABLED.
+    _artwork_enabled = os.environ.get(
+        "ARTWORK_HEALTH_ENABLED", "false"
+    ).strip().lower() not in ("0", "false", "no", "off", "")
+    _artwork_clients = [
+        c for c in arr_clients.values() if c.name in ("Sonarr", "Radarr")
+    ]
+    if _artwork_enabled and _artwork_clients:
+        from docktarr.artwork_health import (
+            ArtworkHealthConfig,
+            ArtworkHealthState,
+            run_artwork_health,
+        )
+
+        _artwork_presence = os.environ.get(
+            "ARTWORK_HEALTH_PRESENCE_CHECK", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        # Presence spot-check needs docker exec into the arr container; build a
+        # DockerManager if one isn't already up, degrading to disabled (not a
+        # crash) on a host with no docker socket.
+        if _artwork_presence and docker_mgr is None:
+            try:
+                docker_mgr = DockerManager()
+            except Exception as exc:
+                log.warning(
+                    "artwork_health: docker unavailable, presence spot-check "
+                    "disabled (%s)",
+                    exc,
+                )
+                docker_mgr = None
+        _artwork_cfg = ArtworkHealthConfig(
+            enabled=True,
+            auto_heal=os.environ.get("ARTWORK_HEALTH_AUTO_HEAL", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
+            check_image_fields=os.environ.get(
+                "ARTWORK_HEALTH_CHECK_IMAGE_FIELDS", "false"
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "no", "off", ""),
+            presence_check=_artwork_presence and docker_mgr is not None,
+            presence_sample_size=int(
+                os.environ.get("ARTWORK_HEALTH_PRESENCE_SAMPLE_SIZE", "10")
+            ),
+            presence_auto_refresh=os.environ.get(
+                "ARTWORK_HEALTH_PRESENCE_AUTO_REFRESH", "false"
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "no", "off", ""),
+            debounce=int(os.environ.get("ARTWORK_HEALTH_DEBOUNCE", "1")),
+        )
+        _artwork_state = ArtworkHealthState()
+        _artwork_docker = docker_mgr if _artwork_cfg.presence_check else None
+        _artwork_interval = os.environ.get("ARTWORK_HEALTH_INTERVAL", "6h")
+
+        async def _artwork_health_job():
+            await run_artwork_health(
+                arr_clients=_artwork_clients,
+                config=_artwork_cfg,
+                notifier=notifier,
+                state=_artwork_state,
+                docker_manager=_artwork_docker,
+                health_state=health_state,
+            )
+
+        scheduler.add_job(
+            _artwork_health_job,
+            "interval",
+            seconds=parse_duration(_artwork_interval).total_seconds(),
+            id="artwork_health",
+            next_run_time=datetime.now(timezone.utc),  # run once on startup
+        )
+        log.info(
+            "artwork_health enabled (services=%s, auto_heal=%s, "
+            "check_image_fields=%s, presence_check=%s, sample=%d, "
+            "auto_refresh=%s, debounce=%d, interval=%s)",
+            [c.name for c in _artwork_clients],
+            _artwork_cfg.auto_heal,
+            _artwork_cfg.check_image_fields,
+            _artwork_cfg.presence_check,
+            _artwork_cfg.presence_sample_size,
+            _artwork_cfg.presence_auto_refresh,
+            _artwork_cfg.debounce,
+            _artwork_interval,
         )
 
     # Daily digest

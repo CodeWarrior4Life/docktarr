@@ -88,6 +88,14 @@ Docktarr runs four independent jobs:
 | `PERMS_HEALTH_INTERVAL` | No | `6h` | Permissions health scan interval |
 | `DOCKTARR_HOST_NAME` | No | - | Override detected hostname for SSH routing |
 | `DOCKTARR_SKIP_NETWORK_INIT` | No | `false` | Skip SSH connectivity check on startup |
+| `ARTWORK_HEALTH_ENABLED` | No | `false` | Master switch for the artwork-health watchdog |
+| `ARTWORK_HEALTH_INTERVAL` | No | `6h` | Artwork-health tick interval |
+| `ARTWORK_HEALTH_AUTO_HEAL` | No | `true` | Re-enable a disabled Kodi (XBMC) / Emby metadata consumer |
+| `ARTWORK_HEALTH_CHECK_IMAGE_FIELDS` | No | `false` | Also alert if the consumer's image sub-toggles are off |
+| `ARTWORK_HEALTH_PRESENCE_CHECK` | No | `true` | Spot-check recent items for poster/fanart on disk (needs Docker) |
+| `ARTWORK_HEALTH_PRESENCE_SAMPLE_SIZE` | No | `10` | How many most-recently-added items to spot-check per arr |
+| `ARTWORK_HEALTH_PRESENCE_AUTO_REFRESH` | No | `false` | Trigger RefreshSeries/RefreshMovie for items missing artwork |
+| `ARTWORK_HEALTH_DEBOUNCE` | No | `1` | Consecutive breaching ticks before an alert fires (then deduped) |
 
 ## Webhook Events
 
@@ -149,6 +157,43 @@ Docktarr enforces two safeguards automatically:
 
 1. **Hardlink skip**: any file with `nlink > 1` (i.e. referenced from more than one path) is silently skipped during `auto_fix`. A `perms.skipped_hardlinks` webhook event fires with a count and sample paths so you can investigate.
 2. **Downloads-path warning**: if a configured path contains `downloads` or `mam` (case-insensitive), Docktarr logs a WARNING at scan time reminding you to set `auto_fix: false`.
+
+## Artwork Health
+
+Keeps Plex/Jellyfin/Kodi artwork intact by guarding the Sonarr/Radarr metadata
+pipeline. Off by default — set `ARTWORK_HEALTH_ENABLED=true` to activate.
+
+Born from the 2026-07-15 blank-artwork incident: Sonarr's **"Kodi (XBMC) /
+Emby"** metadata consumer (`XbmcMetadata`) had been disabled, so no
+`poster.jpg` / `fanart.jpg` / season art / `*-thumb.jpg` / `.nfo` sidecars
+were ever written to disk and every downstream player showed blank posters.
+
+Two responsibilities per tick (default every `ARTWORK_HEALTH_INTERVAL` = 6h):
+
+1. **Consumer-drift guard (root-cause fix).** GETs `/api/v3/metadata` on each
+   configured Sonarr/Radarr and finds the `XbmcMetadata` consumer. If it is
+   disabled it emits `artwork_health.consumer_disabled` and — when
+   `ARTWORK_HEALTH_AUTO_HEAL` is on (default) — GETs the full consumer object,
+   flips `enable=true`, PUTs it back (preserving every other field), and emits
+   `artwork_health.consumer_reenabled`. With `ARTWORK_HEALTH_CHECK_IMAGE_FIELDS`
+   it additionally alerts (`artwork_health.consumer_images_disabled`) when the
+   per-image toggles (`seriesImages`/`seasonImages`/`episodeImages` for Sonarr,
+   `movieImages` for Radarr) are off. Re-enabling is safe and reversible, which
+   is why auto-heal defaults on.
+2. **Artwork presence spot-check (alert-only).** For the
+   `ARTWORK_HEALTH_PRESENCE_SAMPLE_SIZE` most-recently-added items it reads each
+   item's `path` from the arr API and `docker exec`s into the arr container
+   (the same mechanism `mount_audit` uses — no host mount assumed) to confirm
+   `poster.jpg`/`fanart.jpg` exist on disk, emitting `artwork_health.artwork_missing`
+   with a count + sample. No auto-heal for presence in v1; set
+   `ARTWORK_HEALTH_PRESENCE_AUTO_REFRESH=true` to also trigger a
+   `RefreshSeries`/`RefreshMovie` for the missing items. Requires Docker access;
+   degrades to skipped (consumer guard still runs) when unavailable.
+
+Alerts are deduped (`ARTWORK_HEALTH_DEBOUNCE`): one alert per incident, re-armed
+only after the condition clears. State is surfaced at `GET /health` (and
+`GET /health/artwork_health`) under the `artwork_health` key. Requires Sonarr
+and/or Radarr to be configured (`SONARR_URL`/`SONARR_API_KEY`, etc.).
 
 ## Consolidating arr-orchestrator
 

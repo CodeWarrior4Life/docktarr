@@ -113,7 +113,10 @@ class Config:
             "pid_pressure.breach,pid_pressure.zombies_total,"
             "pid_pressure.restarted,pid_pressure.restart_failed,"
             "plex_singleton.split_brain,"
-            "plex_connections_guard.corrected,plex_connections_guard.stale",
+            "plex_connections_guard.corrected,plex_connections_guard.stale,"
+            "artwork_health.consumer_disabled,artwork_health.consumer_reenabled,"
+            "artwork_health.consumer_images_disabled,"
+            "artwork_health.artwork_missing,artwork_health.error",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
@@ -274,9 +277,7 @@ def _apply_arr_command_queue_env(yaml_cfg: YamlConfig) -> YamlConfig:
     else:
         names = list(base.drain_command_names)
 
-    critical_raw = os.environ.get(
-        "DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS", ""
-    ).strip()
+    critical_raw = os.environ.get("DOCKTARR_ARR_SCHEDULER_CRITICAL_TASKS", "").strip()
     if critical_raw:
         critical = [n.strip() for n in critical_raw.split(",") if n.strip()]
     else:

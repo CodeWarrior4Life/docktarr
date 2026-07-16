@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.0 — 2026-07-15
+
+One new module, born from the 2026-07-15 blank-artwork incident.
+
+### Added
+- **`artwork_health` module — artwork-pipeline watchdog.** Born from the
+  incident where Plex/Jellyfin showed blank episode/series/movie posters
+  because Sonarr's (and Radarr's) **"Kodi (XBMC) / Emby"** metadata consumer
+  (implementation `XbmcMetadata`) had been disabled. With that consumer off,
+  the *arr apps never write `poster.jpg` / `fanart.jpg` / season art /
+  `*-thumb.jpg` / `.nfo` sidecars to disk, so every downstream player that
+  reads on-disk artwork renders blank. The module has two responsibilities per
+  tick. **(A) Consumer-drift guard (root-cause fix):** GETs `/api/v3/metadata`
+  on each configured Sonarr/Radarr, finds the `XbmcMetadata` consumer, and if
+  it is disabled emits `artwork_health.consumer_disabled` naming the service
+  AND — when `auto_heal` is on (default `true`, because re-enabling is safe and
+  reversible) — GETs the full consumer object, sets `enable=true`, PUTs it back
+  to `/api/v3/metadata/{id}` preserving every other field, then emits
+  `artwork_health.consumer_reenabled`. Behind an off-by-default advanced toggle
+  (`check_image_fields`) it also verifies the per-image sub-fields
+  (`seriesImages`/`seasonImages`/`episodeImages` for Sonarr, `movieImages` for
+  Radarr) and emits `artwork_health.consumer_images_disabled` (alert-only) if
+  any is off. **(B) Artwork presence spot-check (alert-only):** for the N
+  most-recently-added items (`presence_sample_size`, default 10) it reads each
+  item's `path` from the arr API and `docker exec`s into the arr container (the
+  same mechanism `mount_audit` uses — reusing `DockerManager.exec_run`, no host
+  mount assumed) to confirm `poster.jpg`/`fanart.jpg` exist on disk, emitting
+  `artwork_health.artwork_missing` with a count + sample. No auto-heal for
+  presence in v1; an off-by-default `presence_auto_refresh` triggers
+  `RefreshSeries`/`RefreshMovie` for the missing items so the consumer re-writes
+  the sidecars. The presence check requires Docker access and degrades to
+  skipped (the consumer guard still runs) when a `DockerManager` can't be built.
+  Alerts are deduped via a per-service/per-signal consecutive-tick counter
+  (`debounce`, default 1): one alert per incident, re-armed only after the
+  condition clears. The module is **OFF by default**; enable via
+  `ARTWORK_HEALTH_ENABLED=true`. Wired into `main.py` (default interval 6h, runs
+  once on startup) and gated on Sonarr/Radarr being configured. Structured
+  per-service reports are surfaced at `GET /health` (and
+  `GET /health/artwork_health`) under the `artwork_health` key. Env vars:
+  `ARTWORK_HEALTH_ENABLED` (default `false`), `ARTWORK_HEALTH_INTERVAL` (`6h`),
+  `ARTWORK_HEALTH_AUTO_HEAL` (`true`), `ARTWORK_HEALTH_CHECK_IMAGE_FIELDS`
+  (`false`), `ARTWORK_HEALTH_PRESENCE_CHECK` (`true`),
+  `ARTWORK_HEALTH_PRESENCE_SAMPLE_SIZE` (`10`),
+  `ARTWORK_HEALTH_PRESENCE_AUTO_REFRESH` (`false`), `ARTWORK_HEALTH_DEBOUNCE`
+  (`1`). Events: `artwork_health.consumer_disabled`,
+  `artwork_health.consumer_reenabled`, `artwork_health.consumer_images_disabled`,
+  `artwork_health.artwork_missing`, `artwork_health.error`.
+
 ## 0.8.0 — 2026-06-21
 
 Three new Plex/health modules, each born from a real incident on 2026-06-21.
