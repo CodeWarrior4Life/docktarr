@@ -21,6 +21,7 @@ class HealthState:
     plex_throttle: dict | None = None
     arr_command_queue: list[dict] = field(default_factory=list)
     arr_scheduler: list[dict] = field(default_factory=list)
+    artwork_health: list[dict] = field(default_factory=list)
 
     def record_hw(self, by_host: dict[str, list[dict]]) -> None:
         self.hw = by_host
@@ -55,6 +56,9 @@ class HealthState:
     def record_arr_scheduler_health(self, reports: list[dict]) -> None:
         self.arr_scheduler = reports
 
+    def record_artwork_health(self, reports: list[dict]) -> None:
+        self.artwork_health = reports
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hw_capability": self.hw,
@@ -67,6 +71,7 @@ class HealthState:
             "plex_throttle": self.plex_throttle,
             "arr_command_queue": self.arr_command_queue,
             "arr_scheduler": self.arr_scheduler,
+            "artwork_health": self.artwork_health,
         }
 
 
@@ -91,6 +96,7 @@ class HealthServer:
         app.router.add_get("/health/plex_throttle", self._plex_throttle)
         app.router.add_get("/health/arr_command_queue", self._arr_command_queue)
         app.router.add_get("/health/arr_scheduler", self._arr_scheduler)
+        app.router.add_get("/health/artwork_health", self._artwork_health)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self._host, self._port)
@@ -128,3 +134,6 @@ class HealthServer:
 
     async def _arr_scheduler(self, req):
         return web.json_response(self._state.arr_scheduler)
+
+    async def _artwork_health(self, req):
+        return web.json_response(self._state.artwork_health)
