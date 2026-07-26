@@ -459,7 +459,10 @@ async def _recent_candidates_sonarr(
     sonarr: "ArrClient", lookback: timedelta
 ) -> list[MediaCandidate]:
     """Recently imported episodes — same history lookback pattern as
-    imposter_detector."""
+    imposter_detector. Sonarr v4 rejects a string ``eventType`` query
+    parameter with 400 (the param is an integer enum), so filter by the
+    string ``eventType`` in the response client-side — safe across
+    Sonarr versions."""
     cutoff = datetime.now(timezone.utc) - lookback
     resp = await sonarr._client.get(
         f"{sonarr._url}/api/v3/history",
@@ -467,7 +470,6 @@ async def _recent_candidates_sonarr(
             "pageSize": 100,
             "sortKey": "date",
             "sortDirection": "descending",
-            "eventType": "downloadFolderImported",
         },
         headers=sonarr._headers(),
     )
@@ -476,6 +478,8 @@ async def _recent_candidates_sonarr(
 
     episode_ids: set[int] = set()
     for record in records:
+        if record.get("eventType") != "downloadFolderImported":
+            continue
         record_date = record.get("date", "")
         if record_date and record_date[:19] < cutoff.strftime("%Y-%m-%dT%H:%M:%S"):
             continue

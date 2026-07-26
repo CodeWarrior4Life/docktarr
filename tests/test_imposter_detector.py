@@ -55,6 +55,13 @@ class TestImposterDetector:
             method = request.method
 
             if "/history" in path and method == "GET":
+                # Sonarr v4 rejects a string eventType query parameter with
+                # 400 (integer enum) — enforce that so a regression to
+                # server-side string filtering fails loudly.
+                if "eventType" in request.url.params:
+                    return httpx.Response(
+                        400, json={"message": "invalid eventType"}
+                    )
                 return httpx.Response(200, json={"records": history})
 
             if "/episode/" in path and method == "GET":
@@ -126,7 +133,7 @@ class TestImposterDetector:
     async def test_detects_imposter_episode(self, notifier, notifications):
         """Simulates Dark S01E05 being a completely different show (22 min instead of 51 min)."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 100, "date": now}]
+        history = [{"episodeId": 100, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             100: self._make_episode(
                 100, "Dark", 1, 5, "Truths", 51, "22:14", file_id=500
@@ -151,7 +158,7 @@ class TestImposterDetector:
     async def test_detects_short_imposter(self, notifier, notifications):
         """The Last Frontier episode replaced with much shorter content (20 min instead of 54 min)."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 200, "date": now}]
+        history = [{"episodeId": 200, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             200: self._make_episode(
                 200,
@@ -181,7 +188,7 @@ class TestImposterDetector:
     async def test_passes_legitimate_episode(self, notifier, notifications):
         """Normal episode with runtime within tolerance."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 300, "date": now}]
+        history = [{"episodeId": 300, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             300: self._make_episode(
                 300, "Breaking Bad", 1, 1, "Pilot", 58, "57:42", file_id=700
@@ -204,7 +211,7 @@ class TestImposterDetector:
     async def test_skips_short_specials(self, notifier, notifications):
         """Short content like 5-min specials should be skipped."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 400, "date": now}]
+        history = [{"episodeId": 400, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             400: self._make_episode(
                 400, "Some Show", 0, 1, "Behind the Scenes", 5, "22:00", file_id=800
@@ -236,7 +243,7 @@ class TestImposterDetector:
     async def test_skips_double_episode_file(self, notifier, notifications):
         """A file containing E01-E02 (double episode) should not be flagged."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 500, "date": now}]
+        history = [{"episodeId": 500, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             500: self._make_episode(
                 500,
@@ -266,7 +273,7 @@ class TestImposterDetector:
     async def test_allows_slightly_longer_episode(self, notifier, notifications):
         """Episode at 2x expected (double-length finale) should NOT be flagged."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 600, "date": now}]
+        history = [{"episodeId": 600, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             600: self._make_episode(
                 600,
@@ -300,7 +307,7 @@ class TestImposterDetector:
         well within any reasonable tolerance. The network/source mismatch is the
         decisive signal: Netflix never airs on broadcast TV."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 2381, "date": now}]
+        history = [{"episodeId": 2381, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             2381: self._make_episode(
                 2381,
@@ -337,7 +344,7 @@ class TestImposterDetector:
     async def test_passes_streaming_with_web_source(self, notifier, notifications):
         """Netflix show with WEBDL source and plausible runtime -- legitimate."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 2382, "date": now}]
+        history = [{"episodeId": 2382, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             2382: self._make_episode(
                 2382,
@@ -372,7 +379,7 @@ class TestImposterDetector:
         """AMC show (Breaking Bad) with HDTV source is legitimate -- broadcast network
         is expected to have broadcast sources."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 2500, "date": now}]
+        history = [{"episodeId": 2500, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             2500: self._make_episode(
                 2500,
@@ -404,7 +411,7 @@ class TestImposterDetector:
     async def test_detects_movie_file_as_imposter(self, notifier, notifications):
         """A 2h+ movie file labeled as a 51m episode (like Dark S01E01 at 127m)."""
         now = datetime.now(timezone.utc).isoformat()
-        history = [{"episodeId": 700, "date": now}]
+        history = [{"episodeId": 700, "eventType": "downloadFolderImported", "date": now}]
         episodes = {
             700: self._make_episode(
                 700,
@@ -430,6 +437,33 @@ class TestImposterDetector:
 
         assert 1100 in deleted
         assert any(n["event"] == "imposter.detected" for n in notifications)
+
+    async def test_non_import_history_events_ignored(self, notifier, notifications):
+        """Only downloadFolderImported records count — grabbed/deleted events
+        must not trigger evaluation (client-side eventType filter)."""
+        now = datetime.now(timezone.utc).isoformat()
+        history = [
+            {"episodeId": 800, "eventType": "grabbed", "date": now},
+            {"episodeId": 800, "eventType": "episodeFileDeleted", "date": now},
+        ]
+        episodes = {
+            800: self._make_episode(
+                800, "Dark", 1, 6, "Sic Mundus", 51, "22:14", file_id=1200
+            )
+        }
+        deleted = []
+        commands = []
+        sonarr = self._make_sonarr(history, episodes, deleted, commands)
+
+        await run_imposter_detector(
+            arr_clients={"Sonarr": sonarr},
+            notifier=notifier,
+            lookback=timedelta(hours=24),
+            tolerance=0.40,
+        )
+
+        assert deleted == []
+        assert notifications == []
 
 
 class TestImposterBackfill:

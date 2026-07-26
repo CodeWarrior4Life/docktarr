@@ -286,6 +286,11 @@ def _make_sonarr(
         path = request.url.path
         method = request.method
         if path.endswith("/api/v3/history") and method == "GET":
+            # Sonarr v4 rejects a string eventType query parameter with 400
+            # (integer enum) — enforce that so a regression to server-side
+            # string filtering fails loudly.
+            if "eventType" in request.url.params:
+                return httpx.Response(400, json={"message": "invalid eventType"})
             return httpx.Response(200, json={"records": history})
         if "/api/v3/episode/" in path and method == "GET":
             ep = episodes.get(int(path.split("/")[-1]))
@@ -396,7 +401,7 @@ class TestRunMediaQa:
         deleted: list[int] = []
         commands: list[dict] = []
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
             deleted_files=deleted,
             commands=commands,
@@ -429,7 +434,7 @@ class TestRunMediaQa:
 
     async def test_dv5_flagged(self):
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
         )
         dm = FakeDockerManager(
@@ -449,7 +454,7 @@ class TestRunMediaQa:
 
     async def test_healthy_dv8_hdr10plus_not_flagged(self):
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
         )
         dm = FakeDockerManager(
@@ -467,7 +472,7 @@ class TestRunMediaQa:
         deleted: list[int] = []
         commands: list[dict] = []
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
             deleted_files=deleted,
             commands=commands,
@@ -492,7 +497,7 @@ class TestRunMediaQa:
 
     async def test_flag_deduped_across_ticks(self):
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
         )
         dm = FakeDockerManager({_EP_PATH: (_probe(), _EMPTY_FRAMES)})
@@ -515,7 +520,7 @@ class TestRunMediaQa:
             "%Y-%m-%dT%H:%M:%SZ"
         )
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": old}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": old}],
             episodes={10: _episode()},
         )
         dm = FakeDockerManager({_EP_PATH: (_probe(), _EMPTY_FRAMES)})
@@ -531,10 +536,35 @@ class TestRunMediaQa:
 
         assert reports[0].scanned == 0 and events == []
 
+    async def test_sonarr_non_import_history_events_ignored(self):
+        # Client-side eventType filter: grabbed/deleted records never probe.
+        sonarr = _make_sonarr(
+            history=[
+                {"episodeId": 10, "eventType": "grabbed", "date": _recent_date()},
+                {
+                    "episodeId": 10,
+                    "eventType": "episodeFileDeleted",
+                    "date": _recent_date(),
+                },
+            ],
+            episodes={10: _episode()},
+        )
+        dm = FakeDockerManager({_EP_PATH: (_probe(), _EMPTY_FRAMES)})
+        notifier, events = _make_notifier()
+
+        reports = await run_media_qa(
+            arr_clients=[sonarr],
+            config=_cfg(),
+            notifier=notifier,
+            docker_manager=dm,
+        )
+
+        assert reports[0].scanned == 0 and events == []
+
     async def test_probe_failure_is_error_not_flag(self):
         deleted: list[int] = []
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
             deleted_files=deleted,
         )
@@ -556,7 +586,7 @@ class TestRunMediaQa:
 
     async def test_no_ffprobe_binary_degrades_with_error(self):
         sonarr = _make_sonarr(
-            history=[{"episodeId": 10, "date": _recent_date()}],
+            history=[{"episodeId": 10, "eventType": "downloadFolderImported", "date": _recent_date()}],
             episodes={10: _episode()},
         )
         dm = FakeDockerManager(
