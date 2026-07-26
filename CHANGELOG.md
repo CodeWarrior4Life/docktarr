@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.1 — 2026-07-26
+
+### Fixed
+- **Sonarr history queries no longer pass a string `eventType` query
+  parameter.** Surfaced by media_qa's first live tick on Sonarr v4:
+  `GET /api/v3/history?eventType=downloadFolderImported` returns **400**
+  (the parameter is an integer enum; `eventType=3` or no parameter works).
+  Both `media_qa` and `imposter_detector` now fetch the history page without
+  the parameter and filter `eventType == "downloadFolderImported"`
+  client-side — the same approach media_qa already used for Radarr, and safe
+  across Sonarr versions. The `imposter_detector` occurrence was a latent
+  production bug: its recent-imports scan had been silently 400ing against
+  Sonarr v4 (caught and logged by its blanket exception handler), so only
+  its weekly backfill was actually catching imposters. Tests now assert the
+  mock Sonarr rejects a string `eventType` with 400 and that non-import
+  history events (grabbed/deleted) are ignored.
+
 ## 0.10.0 — 2026-07-26
 
 One new module, born from the 2026-07-26 "audio but no picture" incident.

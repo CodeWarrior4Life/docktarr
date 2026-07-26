@@ -221,13 +221,15 @@ async def run_imposter_detector(
         now = datetime.now(timezone.utc)
         cutoff = now - lookback
 
+        # NOTE: Sonarr v4 rejects a string ``eventType`` query parameter with
+        # 400 (the param is an integer enum), so filter by the string
+        # ``eventType`` in the response client-side — safe across versions.
         resp = await sonarr._client.get(
             f"{sonarr._url}/api/v3/history",
             params={
                 "pageSize": 100,
                 "sortKey": "date",
                 "sortDirection": "descending",
-                "eventType": "downloadFolderImported",
             },
             headers=sonarr._headers(),
         )
@@ -236,6 +238,8 @@ async def run_imposter_detector(
 
         episode_ids = set()
         for record in history:
+            if record.get("eventType") != "downloadFolderImported":
+                continue
             record_date = record.get("date", "")
             if record_date and record_date[:19] < cutoff.strftime("%Y-%m-%dT%H:%M:%S"):
                 continue
