@@ -910,6 +910,127 @@ async def _build_scheduler_for_test(
             _artwork_interval,
         )
 
+    # --- media_qa (v0.10.0 2026-07-26) ---
+    # Post-import dud-file detection. Born from the 2026-07-26 incident: a
+    # "For All Mankind" S05E06 2160p file imported cleanly but carried ZERO
+    # HDR metadata on a PQ (smpte2084) stream — tone-mapping players assumed
+    # a 10,000-nit peak and rendered near-black ("audio but no picture").
+    # Probes recent imports with ffprobe (docker exec into the arr container,
+    # which has the media mount AND bundles ffprobe) for three dud classes:
+    # DV Profile 5 without HDR10 fallback, metadata-less PQ, and
+    # missing/truncated video. ALERT-ONLY by default; MEDIA_QA_AUTO_REMEDIATE
+    # opts in to delete + re-search. OFF by default — MEDIA_QA_ENABLED=true.
+    _media_qa_enabled = os.environ.get(
+        "MEDIA_QA_ENABLED", "false"
+    ).strip().lower() not in ("0", "false", "no", "off", "")
+    _media_qa_clients = [
+        c for c in arr_clients.values() if c.name in ("Sonarr", "Radarr")
+    ]
+    if _media_qa_enabled and _media_qa_clients:
+        from docktarr.media_qa import (
+            MediaQaConfig,
+            MediaQaState,
+            run_media_qa,
+            run_media_qa_backfill,
+        )
+
+        # ffprobe runs via docker exec; build a DockerManager if one isn't
+        # already up, degrading to disabled (not a crash) without a socket.
+        if docker_mgr is None:
+            try:
+                docker_mgr = DockerManager()
+            except Exception as exc:
+                log.warning("media_qa: docker unavailable, disabling (%s)", exc)
+                docker_mgr = None
+
+        if docker_mgr is None:
+            log.warning(
+                "media_qa: disabled — ffprobe runs via docker exec and no "
+                "docker socket is available"
+            )
+        else:
+            _media_qa_cfg = MediaQaConfig(
+                enabled=True,
+                auto_remediate=os.environ.get("MEDIA_QA_AUTO_REMEDIATE", "false")
+                .strip()
+                .lower()
+                not in ("0", "false", "no", "off", ""),
+                truncation_ratio=float(
+                    os.environ.get("MEDIA_QA_TRUNCATION_RATIO", "0.25")
+                ),
+                ffprobe_path=os.environ.get("MEDIA_QA_FFPROBE_PATH", "").strip()
+                or None,
+                ffprobe_container=os.environ.get(
+                    "MEDIA_QA_FFPROBE_CONTAINER", ""
+                ).strip()
+                or None,
+            )
+            _media_qa_state = MediaQaState()
+            _media_qa_lookback = parse_duration(
+                os.environ.get("MEDIA_QA_LOOKBACK", "24h")
+            )
+            _media_qa_interval = os.environ.get("MEDIA_QA_INTERVAL", "1h")
+
+            async def _media_qa_job():
+                await run_media_qa(
+                    arr_clients=_media_qa_clients,
+                    config=_media_qa_cfg,
+                    notifier=notifier,
+                    docker_manager=docker_mgr,
+                    state=_media_qa_state,
+                    health_state=health_state,
+                    lookback=_media_qa_lookback,
+                )
+
+            scheduler.add_job(
+                _media_qa_job,
+                "interval",
+                seconds=parse_duration(_media_qa_interval).total_seconds(),
+                id="media_qa",
+                next_run_time=datetime.now(timezone.utc),  # run once on startup
+            )
+            log.info(
+                "media_qa enabled (services=%s, auto_remediate=%s, lookback=%s, "
+                "interval=%s, truncation_ratio=%.2f, ffprobe_container=%s)",
+                [c.name for c in _media_qa_clients],
+                _media_qa_cfg.auto_remediate,
+                _media_qa_lookback,
+                _media_qa_interval,
+                _media_qa_cfg.truncation_ratio,
+                _media_qa_cfg.ffprobe_container or "(per-arr)",
+            )
+
+            _media_qa_backfill_enabled = os.environ.get(
+                "MEDIA_QA_BACKFILL_ENABLED", "false"
+            ).strip().lower() not in ("0", "false", "no", "off", "")
+            if _media_qa_backfill_enabled:
+                _media_qa_backfill_interval = os.environ.get(
+                    "MEDIA_QA_BACKFILL_INTERVAL", "7d"
+                )
+
+                async def _media_qa_backfill_job():
+                    await run_media_qa_backfill(
+                        arr_clients=_media_qa_clients,
+                        config=_media_qa_cfg,
+                        notifier=notifier,
+                        docker_manager=docker_mgr,
+                        state=_media_qa_state,
+                        health_state=health_state,
+                    )
+
+                scheduler.add_job(
+                    _media_qa_backfill_job,
+                    "interval",
+                    seconds=parse_duration(
+                        _media_qa_backfill_interval
+                    ).total_seconds(),
+                    id="media_qa_backfill",
+                )
+                log.info(
+                    "media_qa backfill enabled (interval=%s)",
+                    _media_qa_backfill_interval,
+                )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

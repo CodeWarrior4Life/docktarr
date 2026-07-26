@@ -116,7 +116,8 @@ class Config:
             "plex_connections_guard.corrected,plex_connections_guard.stale,"
             "artwork_health.consumer_disabled,artwork_health.consumer_reenabled,"
             "artwork_health.consumer_images_disabled,"
-            "artwork_health.artwork_missing,artwork_health.error",
+            "artwork_health.artwork_missing,artwork_health.error,"
+            "media_qa.flagged,media_qa.remediated,media_qa.error",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None

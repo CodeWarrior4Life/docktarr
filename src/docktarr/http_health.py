@@ -22,6 +22,7 @@ class HealthState:
     arr_command_queue: list[dict] = field(default_factory=list)
     arr_scheduler: list[dict] = field(default_factory=list)
     artwork_health: list[dict] = field(default_factory=list)
+    media_qa: list[dict] = field(default_factory=list)
 
     def record_hw(self, by_host: dict[str, list[dict]]) -> None:
         self.hw = by_host
@@ -59,6 +60,9 @@ class HealthState:
     def record_artwork_health(self, reports: list[dict]) -> None:
         self.artwork_health = reports
 
+    def record_media_qa(self, reports: list[dict]) -> None:
+        self.media_qa = reports
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "hw_capability": self.hw,
@@ -72,6 +76,7 @@ class HealthState:
             "arr_command_queue": self.arr_command_queue,
             "arr_scheduler": self.arr_scheduler,
             "artwork_health": self.artwork_health,
+            "media_qa": self.media_qa,
         }
 
 
@@ -97,6 +102,7 @@ class HealthServer:
         app.router.add_get("/health/arr_command_queue", self._arr_command_queue)
         app.router.add_get("/health/arr_scheduler", self._arr_scheduler)
         app.router.add_get("/health/artwork_health", self._artwork_health)
+        app.router.add_get("/health/media_qa", self._media_qa)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self._host, self._port)
@@ -137,3 +143,6 @@ class HealthServer:
 
     async def _artwork_health(self, req):
         return web.json_response(self._state.artwork_health)
+
+    async def _media_qa(self, req):
+        return web.json_response(self._state.media_qa)

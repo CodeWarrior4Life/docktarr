@@ -96,6 +96,15 @@ Docktarr runs four independent jobs:
 | `ARTWORK_HEALTH_PRESENCE_SAMPLE_SIZE` | No | `10` | How many most-recently-added items to spot-check per arr |
 | `ARTWORK_HEALTH_PRESENCE_AUTO_REFRESH` | No | `false` | Trigger RefreshSeries/RefreshMovie for items missing artwork |
 | `ARTWORK_HEALTH_DEBOUNCE` | No | `1` | Consecutive breaching ticks before an alert fires (then deduped) |
+| `MEDIA_QA_ENABLED` | No | `false` | Master switch for post-import dud-file detection |
+| `MEDIA_QA_INTERVAL` | No | `1h` | Media QA tick interval (recent-imports scan) |
+| `MEDIA_QA_LOOKBACK` | No | `24h` | Import-history window scanned per tick |
+| `MEDIA_QA_BACKFILL_ENABLED` | No | `false` | Also probe the entire monitored library on a slow cadence |
+| `MEDIA_QA_BACKFILL_INTERVAL` | No | `7d` | Full-library backfill interval |
+| `MEDIA_QA_AUTO_REMEDIATE` | No | `false` | Delete flagged files + trigger re-search (alert-only when false) |
+| `MEDIA_QA_TRUNCATION_RATIO` | No | `0.25` | Flag video shorter than this fraction of the arr-reported runtime |
+| `MEDIA_QA_FFPROBE_PATH` | No | auto | Explicit ffprobe path inside the probed container |
+| `MEDIA_QA_FFPROBE_CONTAINER` | No | the arr container | Alternate container to run ffprobe in (must share the arr's media mounts) |
 
 ## Webhook Events
 
@@ -194,6 +203,49 @@ Alerts are deduped (`ARTWORK_HEALTH_DEBOUNCE`): one alert per incident, re-armed
 only after the condition clears. State is surfaced at `GET /health` (and
 `GET /health/artwork_health`) under the `artwork_health` key. Requires Sonarr
 and/or Radarr to be configured (`SONARR_URL`/`SONARR_API_KEY`, etc.).
+
+## Media QA
+
+Catches "dud" video files that import cleanly but don't actually play. Off by
+default — set `MEDIA_QA_ENABLED=true` to activate.
+
+Born from the 2026-07-26 incident: a 2160p episode imported fine and was valid
+HEVC Main10 PQ/BT.2020 video, but carried **zero HDR metadata** — no mastering
+display color volume, no content light level, no Dolby Vision config, no
+HDR10+. Players that tone-map (Plex Desktop, mpv) assume a 10,000-nit peak for
+metadata-less PQ and render the picture near-black: "audio but no picture".
+
+Each tick (default `MEDIA_QA_INTERVAL` = 1h) it pulls the
+`downloadFolderImported` history from Sonarr/Radarr within `MEDIA_QA_LOOKBACK`
+and probes each new file with ffprobe (JSON output), applying three rules:
+
+1. **`dovi_p5_no_fallback`** — the video stream carries a DOVI configuration
+   record with `dv_profile == 5` (single-layer, no HDR10 base layer):
+   unplayable ("color space not supported") on non-DV clients.
+2. **`pq_missing_hdr_metadata`** — `color_transfer == smpte2084` (PQ) with no
+   mastering-display, content-light-level, Dolby Vision, or HDR10+ metadata
+   (first-frame side data via `-show_frames -read_intervals "%+#1"`).
+3. **`missing_or_truncated_video`** — no real video stream at all, or video
+   duration below `MEDIA_QA_TRUNCATION_RATIO` (default 25%) of the
+   arr-reported runtime.
+
+ffprobe runs via `docker exec` into the arr container itself (the same
+mechanism the artwork presence spot-check uses — no host mount assumed): the
+arr container has the media mounted at exactly the paths its API reports, and
+Sonarr v4 / Radarr v4+ bundle ffprobe. The binary is auto-discovered and
+cached; override with `MEDIA_QA_FFPROBE_PATH` / `MEDIA_QA_FFPROBE_CONTAINER`.
+
+Detection is **alert-only by default**: a `media_qa.flagged` event (Telegram +
+webhook) names the series/movie, the flag reason, and the file path. Set
+`MEDIA_QA_AUTO_REMEDIATE=true` to opt in to the imposter-detector remediation
+path — delete the file via the arr API and trigger an
+`EpisodeSearch`/`MoviesSearch` (`media_qa.remediated`). Probe *failures* are
+never treated as duds (a stale mount must not mass-flag the library); they
+emit a deduped `media_qa.error` instead. Verdicts are cached per (path, size)
+so each file is probed and alerted once. `MEDIA_QA_BACKFILL_ENABLED=true` adds
+a full-library scan every `MEDIA_QA_BACKFILL_INTERVAL` (default 7d) to
+retro-catch duds imported before the module existed. State is surfaced at
+`GET /health` (and `GET /health/media_qa`) under the `media_qa` key.
 
 ## Consolidating arr-orchestrator
 

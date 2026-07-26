@@ -128,6 +128,15 @@ _TEMPLATES = {
         "— set to `{new_customConnections}` and forced a re-publish. Clients "
         "can now discover the live server."
     ),
+    "media_qa.flagged": (
+        "**[Docktarr]** MEDIA QA ({service}): dud file — **{name}** "
+        "[{reason}]. {detail}. File: `{file}`"
+    ),
+    "media_qa.remediated": (
+        "**[Docktarr]** MEDIA QA ({service}): deleted **{name}** [{reason}] "
+        "and triggered a re-search. File: `{file}`"
+    ),
+    "media_qa.error": ("**[Docktarr]** MEDIA QA probe error ({service}): {error}"),
     "plex_connections_guard.stale": (
         "**[Docktarr]** Plex discovery STALE on **{endpoint}**: customConnections "
         "`{old_customConnections}` publishes no reachable address (expected "

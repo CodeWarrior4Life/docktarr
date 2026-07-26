@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.10.0 — 2026-07-26
+
+One new module, born from the 2026-07-26 "audio but no picture" incident.
+
+### Added
+- **`media_qa` module — post-import dud-file detection.** Born from the
+  incident where "For All Mankind (2019) - S05E06
+  [WEBDL-2160p][HDR10][h265]-NT.mkv" imported cleanly and was valid HEVC
+  Main10 PQ/BT.2020 video, but carried ZERO HDR metadata — no Mastering
+  Display Color Volume, no Content Light Level, no Dolby Vision
+  configuration, no HDR10+. Players that tone-map (Plex Desktop, mpv) assume
+  a 10,000-nit peak for metadata-less PQ and rendered the picture near-black
+  ("audio but no picture"); sibling episodes with DV Profile 8.1 + HDR10+
+  metadata played fine. Also covers the earlier incident class where Dolby
+  Vision Profile 5 files (single-layer, no HDR10 fallback) slip past the
+  Sonarr/Radarr custom-format avoid-rule and are unplayable on non-DV
+  clients. Each tick pulls `downloadFolderImported` history from
+  Sonarr/Radarr (same lookback pattern as `imposter_detector`) and probes
+  each new file with ffprobe (JSON output) for three dud classes:
+  **(1) `dovi_p5_no_fallback`** — stream side data carries a DOVI
+  configuration record with `dv_profile == 5`; **(2)
+  `pq_missing_hdr_metadata`** — `color_transfer == smpte2084` with no
+  mastering-display / content-light-level / DV / HDR10+ metadata
+  (first-frame side data probed via `-select_streams v:0 -show_frames
+  -read_intervals "%+#1"`, run only when the stream probe says PQ-without-DV);
+  **(3) `missing_or_truncated_video`** — no real video stream
+  (attached-pic cover art doesn't count) or video duration below
+  `MEDIA_QA_TRUNCATION_RATIO` (default 25%) of the arr-reported runtime.
+  ffprobe executes via `docker exec` **into the arr container itself**
+  (`DockerManager.exec_run`, the same mechanism `artwork_health` /
+  `mount_audit` use — no host mount assumed, and the docktarr image stays
+  slim): the arr container has the media mounted at exactly the paths its
+  API reports, and Sonarr v4 / Radarr v4+ bundle ffprobe; the binary is
+  auto-discovered (PATH, then known linuxserver/hotio bundle locations) and
+  cached, overridable via `MEDIA_QA_FFPROBE_PATH` /
+  `MEDIA_QA_FFPROBE_CONTAINER`. Action on detection is **ALERT-ONLY by
+  default** (`media_qa.flagged` with series/movie name, flag reason, file
+  path); `MEDIA_QA_AUTO_REMEDIATE` (default `false`) opts in to the
+  `imposter_detector` remediation path — delete the file via the arr API and
+  trigger `EpisodeSearch`/`MoviesSearch` (`media_qa.remediated`). Probe
+  FAILURES are never dud verdicts (a stale NFS mount must not mass-flag —
+  or, with auto-remediate on, mass-delete — a healthy library); they emit a
+  deduped `media_qa.error`. Verdicts are cached per (path, size) so each
+  file is probed and alerted once; a quality-upgrade replacement re-probes.
+  An opt-in backfill (`MEDIA_QA_BACKFILL_ENABLED`, default `false`) mirrors
+  `run_imposter_backfill` and probes every monitored file on a slow cadence
+  to retro-catch old duds. The module is **OFF by default**; enable via
+  `MEDIA_QA_ENABLED=true`. Wired into `main.py` (default interval 1h, runs
+  once on startup) and gated on Sonarr/Radarr + a docker socket. Reports are
+  surfaced at `GET /health` (and `GET /health/media_qa`). Env vars:
+  `MEDIA_QA_ENABLED` (default `false`), `MEDIA_QA_INTERVAL` (`1h`),
+  `MEDIA_QA_LOOKBACK` (`24h`), `MEDIA_QA_BACKFILL_ENABLED` (`false`),
+  `MEDIA_QA_BACKFILL_INTERVAL` (`7d`), `MEDIA_QA_AUTO_REMEDIATE` (`false`),
+  `MEDIA_QA_TRUNCATION_RATIO` (`0.25`), `MEDIA_QA_FFPROBE_PATH` (auto),
+  `MEDIA_QA_FFPROBE_CONTAINER` (the arr container). Events:
+  `media_qa.flagged`, `media_qa.remediated`, `media_qa.error`.
+
 ## 0.9.0 — 2026-07-15
 
 One new module, born from the 2026-07-15 blank-artwork incident.
