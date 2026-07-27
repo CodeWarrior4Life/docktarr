@@ -1031,6 +1031,119 @@ async def _build_scheduler_for_test(
                     _media_qa_backfill_interval,
                 )
 
+    # --- profile_sanity (v0.11.0 2026-07-27) ---
+    # Impossible-quality-profile detection. Born from the 2026-07-27 incident:
+    # three Seerr requests read "Failed" with zero errors and green health
+    # checks because each item was assigned a quality profile it can never
+    # satisfy — Sonarr series 678 "Diagnosis: Murder" (1993, SD-only) sat on
+    # profile 5 "Ultra-HD" with 0 of 184 episodes, Radarr movie 1127
+    # "Charlie's Angels" (1976, a 74-minute TV pilot) sat on profile 7
+    # "UHD 4k Remux". Nothing errors; the *arr apps just search forever. Each
+    # tick compares every monitored, file-less, released item's profile FLOOR
+    # (min allowed resolution) against an era CEILING (best source that
+    # plausibly exists) and flags only starved, contradiction-carrying items,
+    # behind fail-closed indexer-outage and library-starvation-ratio guards so
+    # a stack-wide search outage can never mass-flag the library. ALERT-ONLY by
+    # default; PROFILE_SANITY_AUTO_HEAL opts in to per-item reassignment to a
+    # safe profile (never a global profile edit). API-only — no DockerManager.
+    # OFF by default — PROFILE_SANITY_ENABLED=true.
+    _profile_sanity_enabled = os.environ.get(
+        "PROFILE_SANITY_ENABLED", "false"
+    ).strip().lower() not in ("0", "false", "no", "off", "")
+    _profile_sanity_clients = [
+        c for c in arr_clients.values() if c.name in ("Sonarr", "Radarr")
+    ]
+    if _profile_sanity_enabled and _profile_sanity_clients:
+        from docktarr.profile_sanity import (
+            ProfileSanityConfig,
+            ProfileSanityState,
+            run_profile_sanity,
+        )
+
+        _profile_sanity_cfg = ProfileSanityConfig(
+            enabled=True,
+            auto_heal=os.environ.get("PROFILE_SANITY_AUTO_HEAL", "false")
+            .strip()
+            .lower()
+            not in ("0", "false", "no", "off", ""),
+            safe_profile=os.environ.get("PROFILE_SANITY_SAFE_PROFILE", "Any").strip()
+            or "Any",
+            search_after_heal=os.environ.get(
+                "PROFILE_SANITY_SEARCH_AFTER_HEAL", "false"
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "no", "off", ""),
+            max_heals_per_tick=int(
+                os.environ.get("PROFILE_SANITY_MAX_HEALS_PER_TICK", "5")
+            ),
+            max_flags_per_tick=int(
+                os.environ.get("PROFILE_SANITY_MAX_FLAGS_PER_TICK", "10")
+            ),
+            min_starvation_age=parse_duration(
+                os.environ.get("PROFILE_SANITY_MIN_STARVATION_AGE", "3d")
+            ),
+            severe_starvation_age=parse_duration(
+                os.environ.get("PROFILE_SANITY_SEVERE_STARVATION_AGE", "14d")
+            ),
+            sd_era_year=int(os.environ.get("PROFILE_SANITY_SD_ERA_YEAR", "1998")),
+            tv_movie_runtime_max=int(
+                os.environ.get("PROFILE_SANITY_TV_MOVIE_RUNTIME_MAX", "100")
+            ),
+            alert_min_confidence=int(
+                os.environ.get("PROFILE_SANITY_ALERT_MIN_CONFIDENCE", "3")
+            ),
+            heal_min_confidence=int(
+                os.environ.get("PROFILE_SANITY_HEAL_MIN_CONFIDENCE", "5")
+            ),
+            max_starved_ratio=float(
+                os.environ.get("PROFILE_SANITY_MAX_STARVED_RATIO", "0.5")
+            ),
+            min_library_size=int(
+                os.environ.get("PROFILE_SANITY_MIN_LIBRARY_SIZE", "20")
+            ),
+            debounce=int(os.environ.get("PROFILE_SANITY_DEBOUNCE", "1")),
+        )
+        _profile_sanity_state = ProfileSanityState()
+        _profile_sanity_interval = os.environ.get("PROFILE_SANITY_INTERVAL", "6h")
+
+        async def _profile_sanity_job():
+            await run_profile_sanity(
+                arr_clients=_profile_sanity_clients,
+                config=_profile_sanity_cfg,
+                notifier=notifier,
+                state=_profile_sanity_state,
+                health_state=health_state,
+            )
+
+        scheduler.add_job(
+            _profile_sanity_job,
+            "interval",
+            seconds=parse_duration(_profile_sanity_interval).total_seconds(),
+            id="profile_sanity",
+            next_run_time=datetime.now(timezone.utc),  # run once on startup
+        )
+        log.info(
+            "profile_sanity enabled (services=%s, auto_heal=%s, safe_profile=%s, "
+            "search_after_heal=%s, min_starvation_age=%s, sd_era_year=%d, "
+            "alert>=%d, heal>=%d, max_starved_ratio=%.2f, min_library_size=%d, "
+            "max_heals=%d, max_flags=%d, debounce=%d, interval=%s)",
+            [c.name for c in _profile_sanity_clients],
+            _profile_sanity_cfg.auto_heal,
+            _profile_sanity_cfg.safe_profile,
+            _profile_sanity_cfg.search_after_heal,
+            _profile_sanity_cfg.min_starvation_age,
+            _profile_sanity_cfg.sd_era_year,
+            _profile_sanity_cfg.alert_min_confidence,
+            _profile_sanity_cfg.heal_min_confidence,
+            _profile_sanity_cfg.max_starved_ratio,
+            _profile_sanity_cfg.min_library_size,
+            _profile_sanity_cfg.max_heals_per_tick,
+            _profile_sanity_cfg.max_flags_per_tick,
+            _profile_sanity_cfg.debounce,
+            _profile_sanity_interval,
+        )
+
     # Daily digest
     hour, minute = (int(x) for x in config.digest_time.split(":"))
     scheduler.add_job(

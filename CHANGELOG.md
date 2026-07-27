@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.11.0 — 2026-07-27
+
+One new module, born from the 2026-07-27 "Failed with zero errors" incident.
+
+### Added
+- **`profile_sanity` module — impossible-quality-profile detection.** Born from
+  the incident where three Seerr requests read **Failed** with no failed
+  download, no import error, a green `/api/v3/health` and a live indexer set.
+  The cause was per-item: each title had been assigned a quality profile it can
+  never satisfy, so Sonarr/Radarr searched forever and nothing ever errored.
+  Sonarr series 678 "Diagnosis: Murder" (1993, ended, SD-only masters) sat on
+  quality profile 5 "Ultra-HD" → 0 of 184 episodes; Radarr movie 1127
+  "Charlie's Angels" (1976, a 74-minute TV pilot that was never in cinemas) sat
+  on profile 7 "UHD 4k Remux" → no file. Nothing in the *arr stack surfaces
+  this class of failure — from the app's point of view an unsatisfiable profile
+  is indistinguishable from "the release hasn't been posted yet" — so the
+  manual diagnosis (compare a title's era and plausible sources against the
+  *floor* of its profile) is what this module automates. Each tick computes a
+  **profile floor** (minimum resolution over allowed qualities, honouring the
+  live group/flat item shape where a child counts as allowed if its own or its
+  parent group's `allowed` is true, and resolving `resolution: 0` — Radarr DVD
+  id 2, WORKPRINT id 24 — through an SD name table, excluding it when the name
+  is unknown too) and an **era ceiling** (best source that plausibly exists).
+  Measured floors: Sonarr Any=480, SD=480, HD-720p=720, **Ultra-HD=720**;
+  Radarr Any=480, UHD 4k Remux=720, FHD Remux=720 — Ultra-HD's floor is 720,
+  NOT 2160, so the module never assumes a profile's headline cutoff is its
+  floor. The era ceiling is deliberately stingy because it is the core
+  false-positive defence: pre-`PROFILE_SANITY_SD_ERA_YEAR` (1998) *series* cap
+  at 576 (videotape/SD-telecine masters, DVD-sourced releases), while *movies*
+  need more than a year — pre-HD theatrical films are routinely remastered from
+  the negative, so the SD cap applies only when the title looks TV-sourced (no
+  `inCinemas` date, or a runtime under `PROFILE_SANITY_TV_MOVIE_RUNTIME_MAX`);
+  a pre-HD film WITH a theatrical date and a feature runtime gets 1080 instead,
+  leaving a 720 floor satisfiable and correctly unflagged. Modern titles get no
+  ceiling and can never be flagged. Flagging additionally requires every **hard
+  gate**: monitored; **zero files** (Sonarr `statistics.episodeFileCount == 0`
+  with `episodeCount > 0`, Radarr no `hasFile`/`movieFileId` — any file proves
+  the profile satisfiable); **released/airable**, the unreleased-title
+  exclusion that keeps Radarr 1128 "Spider-Man: Brand New Day" (status
+  `announced`, `isAvailable` false, `inCinemas` 2026-07-28, no digital or
+  physical release) permanently untouched; floor > ceiling; **starvation**
+  (older than `PROFILE_SANITY_MIN_STARVATION_AGE`, default 3d, with no
+  `grabbed` and no `downloadFolderImported` event in the per-item history —
+  `GET /api/v3/history/series?seriesId=` / `history/movie?movieId=`, filtered
+  client-side per the 0.10.1 precedent since a string `eventType` query
+  parameter 400s on Sonarr v4); and not currently in `/api/v3/queue`. A
+  **confidence score** (contradiction +2, starved +2, severely starved +1,
+  pre-HD era +2, TV-pilot-shaped runtime +1) gates alerting
+  (`PROFILE_SANITY_ALERT_MIN_CONFIDENCE`, default 3) separately from healing
+  (`PROFILE_SANITY_HEAL_MIN_CONFIDENCE`, default 5) so auto-heal is strictly
+  more conservative than alerting. Two **fail-closed outage guards** run first,
+  because a stack-wide search outage looks exactly like starvation and
+  mass-flagging (or mass-healing) a library would be far worse than the bug
+  being fixed: `profile_sanity.indexer_outage` skips the service entirely when
+  no indexer has Automatic Search enabled, when an `Indexer*Check` health
+  message says "all indexers are unavailable" / "no indexers available", when
+  every auto-search indexer is named in a "…failures: A, B, C" message, or when
+  `/api/v3/indexer` or `/api/v3/health` simply *fails*
+  (`/api/v3/indexerstatus` is deliberately unused — it 404s on Sonarr v4); and
+  `profile_sanity.outage_suspected` skips the service when more than
+  `PROFILE_SANITY_MAX_STARVED_RATIO` (0.5) of at least
+  `PROFILE_SANITY_MIN_LIBRARY_SIZE` (20) eligible items are starved. Action is
+  **ALERT-ONLY by default** — `profile_sanity.flagged` names the item, its
+  current profile, why that profile is impossible (floor vs ceiling in plain
+  words) and the recommended profile. `PROFILE_SANITY_AUTO_HEAL` (default
+  `false`) opts in to **per-item** reassignment: the safe profile is resolved BY
+  NAME (`PROFILE_SANITY_SAFE_PROFILE`, default "Any"), nothing is healed if that
+  name is missing or its own floor still exceeds the ceiling (the alert says
+  which), the zero-files gate is re-asserted against a freshly fetched copy
+  immediately before the write, and the full item object is PUT to
+  `/api/v3/series/{id}` / `/api/v3/movie/{id}` with only `qualityProfileId`
+  mutated — a global quality profile is NEVER PUT or loosened. Before/after ids
+  and names are logged and emitted in `profile_sanity.healed` so every change is
+  trivially reversible; `PROFILE_SANITY_SEARCH_AFTER_HEAL` (default `false`)
+  additionally triggers `SeriesSearch`/`MoviesSearch`;
+  `PROFILE_SANITY_MAX_HEALS_PER_TICK` (5) caps the blast radius and
+  `PROFILE_SANITY_MAX_FLAGS_PER_TICK` (10) caps alert volume; alerts are
+  deduped per `"{service}:{item_id}"` (`PROFILE_SANITY_DEBOUNCE`). The module is
+  **OFF by default**; enable via `PROFILE_SANITY_ENABLED=true`. API-only — it
+  needs no Docker socket. Wired into `main.py` (default interval 6h, runs once
+  on startup), gated on Sonarr/Radarr, and surfaced at `GET /health` (and
+  `GET /health/profile_sanity`). Env vars: `PROFILE_SANITY_ENABLED` (default
+  `false`), `PROFILE_SANITY_INTERVAL` (`6h`), `PROFILE_SANITY_AUTO_HEAL`
+  (`false`), `PROFILE_SANITY_SAFE_PROFILE` (`Any`),
+  `PROFILE_SANITY_SEARCH_AFTER_HEAL` (`false`),
+  `PROFILE_SANITY_MIN_STARVATION_AGE` (`3d`),
+  `PROFILE_SANITY_SEVERE_STARVATION_AGE` (`14d`),
+  `PROFILE_SANITY_SD_ERA_YEAR` (`1998`),
+  `PROFILE_SANITY_TV_MOVIE_RUNTIME_MAX` (`100`),
+  `PROFILE_SANITY_ALERT_MIN_CONFIDENCE` (`3`),
+  `PROFILE_SANITY_HEAL_MIN_CONFIDENCE` (`5`),
+  `PROFILE_SANITY_MAX_STARVED_RATIO` (`0.5`),
+  `PROFILE_SANITY_MIN_LIBRARY_SIZE` (`20`),
+  `PROFILE_SANITY_MAX_HEALS_PER_TICK` (`5`),
+  `PROFILE_SANITY_MAX_FLAGS_PER_TICK` (`10`), `PROFILE_SANITY_DEBOUNCE` (`1`).
+  New webhook events: `profile_sanity.flagged`, `profile_sanity.healed`,
+  `profile_sanity.indexer_outage`, `profile_sanity.outage_suspected`,
+  `profile_sanity.error`. 89 new tests, including the three real specimens
+  end-to-end and a mass-flag regression test that proves a 30-item flaggable
+  library produces zero flags during an indexer outage.
+
 ## 0.10.1 — 2026-07-26
 
 ### Fixed
