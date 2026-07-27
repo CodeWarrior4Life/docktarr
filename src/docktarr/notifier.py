@@ -137,6 +137,32 @@ _TEMPLATES = {
         "and triggered a re-search. File: `{file}`"
     ),
     "media_qa.error": ("**[Docktarr]** MEDIA QA probe error ({service}): {error}"),
+    "profile_sanity.flagged": (
+        "**[Docktarr]** IMPOSSIBLE PROFILE ({service}): **{name}** is assigned "
+        "quality profile **{profile_name}** and can never satisfy it — {why}. "
+        "{starvation}. Recommended profile: **{recommended}** "
+        "(confidence {confidence})."
+    ),
+    "profile_sanity.healed": (
+        "**[Docktarr]** PROFILE SANITY ({service}): reassigned **{name}** from "
+        "quality profile **{old_profile_name}** (id {old_profile_id}) to "
+        "**{new_profile_name}** (id {new_profile_id}){searched}. Revert by "
+        "setting it back to id {old_profile_id}."
+    ),
+    "profile_sanity.indexer_outage": (
+        "**[Docktarr]** PROFILE SANITY ({service}): indexer outage — {reason}. "
+        "Impossible-profile checks are SKIPPED this tick (a stack-wide search "
+        "outage looks exactly like an unsatisfiable profile)."
+    ),
+    "profile_sanity.outage_suspected": (
+        "**[Docktarr]** PROFILE SANITY ({service}): {starved}/{eligible} "
+        "monitored, released, file-less items are starved ({ratio}) — that is a "
+        "search/indexer outage pattern, not per-item impossible profiles. "
+        "Flagging nothing this tick."
+    ),
+    "profile_sanity.error": (
+        "**[Docktarr]** PROFILE SANITY probe error ({service}): {error}"
+    ),
     "plex_connections_guard.stale": (
         "**[Docktarr]** Plex discovery STALE on **{endpoint}**: customConnections "
         "`{old_customConnections}` publishes no reachable address (expected "

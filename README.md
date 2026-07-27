@@ -105,6 +105,22 @@ Docktarr runs four independent jobs:
 | `MEDIA_QA_TRUNCATION_RATIO` | No | `0.25` | Flag video shorter than this fraction of the arr-reported runtime |
 | `MEDIA_QA_FFPROBE_PATH` | No | auto | Explicit ffprobe path inside the probed container |
 | `MEDIA_QA_FFPROBE_CONTAINER` | No | the arr container | Alternate container to run ffprobe in (must share the arr's media mounts) |
+| `PROFILE_SANITY_ENABLED` | No | `false` | Master switch for impossible-quality-profile detection |
+| `PROFILE_SANITY_INTERVAL` | No | `6h` | Profile-sanity tick interval |
+| `PROFILE_SANITY_AUTO_HEAL` | No | `false` | Reassign flagged items to the safe profile (alert-only when false) |
+| `PROFILE_SANITY_SAFE_PROFILE` | No | `Any` | Quality profile (BY NAME) a flagged item is reassigned to |
+| `PROFILE_SANITY_SEARCH_AFTER_HEAL` | No | `false` | Trigger SeriesSearch/MoviesSearch after a reassignment |
+| `PROFILE_SANITY_MIN_STARVATION_AGE` | No | `3d` | Minimum age since `added` before an item can be called starved |
+| `PROFILE_SANITY_SEVERE_STARVATION_AGE` | No | `14d` | Age at which starvation adds an extra confidence point |
+| `PROFILE_SANITY_SD_ERA_YEAR` | No | `1998` | Titles older than this are treated as pre-HD |
+| `PROFILE_SANITY_TV_MOVIE_RUNTIME_MAX` | No | `100` | Runtime (min) below which a pre-HD movie looks TV-sourced |
+| `PROFILE_SANITY_ALERT_MIN_CONFIDENCE` | No | `3` | Confidence score required to alert |
+| `PROFILE_SANITY_HEAL_MIN_CONFIDENCE` | No | `5` | Confidence score required to auto-heal (always ≥ the alert score) |
+| `PROFILE_SANITY_MAX_STARVED_RATIO` | No | `0.5` | Suppress the whole service above this starved/eligible ratio |
+| `PROFILE_SANITY_MIN_LIBRARY_SIZE` | No | `20` | Eligible items needed before the starved-ratio guard applies |
+| `PROFILE_SANITY_MAX_HEALS_PER_TICK` | No | `5` | Blast-radius cap on reassignments per tick |
+| `PROFILE_SANITY_MAX_FLAGS_PER_TICK` | No | `10` | Alert-volume cap per tick |
+| `PROFILE_SANITY_DEBOUNCE` | No | `1` | Consecutive breaching ticks before an alert fires (then deduped) |
 
 ## Webhook Events
 
@@ -246,6 +262,91 @@ so each file is probed and alerted once. `MEDIA_QA_BACKFILL_ENABLED=true` adds
 a full-library scan every `MEDIA_QA_BACKFILL_INTERVAL` (default 7d) to
 retro-catch duds imported before the module existed. State is surfaced at
 `GET /health` (and `GET /health/media_qa`) under the `media_qa` key.
+
+## Profile Sanity
+
+Catches items assigned a quality profile they can **never** satisfy. Off by
+default — set `PROFILE_SANITY_ENABLED=true` to activate.
+
+Born from the 2026-07-27 incident: three Seerr requests read **Failed** with
+zero errors anywhere — no failed download, no import error, a green
+`/api/v3/health`, live indexers. Each item had simply been given a profile
+nothing could ever fill, so Sonarr/Radarr searched forever and nothing errored:
+
+- Sonarr series 678 **Diagnosis: Murder** (1993, ended, SD-only masters) sat on
+  profile 5 "Ultra-HD" → 0 of 184 episodes, forever.
+- Radarr movie 1127 **Charlie's Angels** (1976, a 74-minute TV pilot that was
+  never in cinemas) sat on profile 7 "UHD 4k Remux" → no file, forever.
+
+Nothing in the *arr stack surfaces this class of failure: from the app's point
+of view an unsatisfiable profile is indistinguishable from "the release just
+hasn't been posted yet". Each tick (default `PROFILE_SANITY_INTERVAL` = 6h) the
+module automates the manual diagnosis — compare a title's era and plausible
+sources against the *floor* of its quality profile.
+
+**Profile floor.** `/api/v3/qualityprofile` items are either flat
+(`{"quality": {...}, "items": [], "allowed": bool}`) or a group
+(`{"name": "WEB 720p", "items": [...], "allowed": bool}`); a quality counts as
+allowed when its own or its parent group's `allowed` is true. The floor is the
+minimum resolution over allowed qualities, with `resolution: 0` (Radarr DVD,
+WORKPRINT) resolved through a name table and otherwise excluded. Measured
+2026-07-27: Sonarr `Any`=480, `SD`=480, `HD-720p`=720, `Ultra-HD`=**720**;
+Radarr `Any`=480, `UHD 4k Remux`=720, `FHD Remux`=720. Note Ultra-HD's floor is
+720, *not* 2160 — the module never assumes a profile's headline cutoff is its
+floor.
+
+**Era ceiling** — the best source that plausibly exists for the title, and the
+core false-positive defence. Pre-`PROFILE_SANITY_SD_ERA_YEAR` (1998) *series*
+were mastered to videotape/SD, so they cap at 576. For *movies* year alone is
+deliberately not enough: pre-HD theatrical films are routinely remastered from
+the negative, so the SD cap applies only when the title looks TV-sourced (no
+`inCinemas` date, or a runtime below `PROFILE_SANITY_TV_MOVIE_RUNTIME_MAX`) —
+exactly Charlie's Angels. A pre-HD film *with* a theatrical date and a feature
+runtime gets 1080 instead, so a 720 floor stays satisfiable and it is correctly
+not flagged. Modern titles get no ceiling at all and can never be flagged.
+
+**Hard gates** (all must pass): monitored; **zero files** (any file proves the
+profile is satisfiable); **released/airable** — the unreleased-title exclusion
+(Radarr 1128 "Spider-Man: Brand New Day", `announced`, `isAvailable` false,
+`inCinemas` in the future, has no file for an entirely healthy reason);
+floor > ceiling (without that contradiction there is no impossible profile);
+**starvation** — older than `PROFILE_SANITY_MIN_STARVATION_AGE` (3d) with no
+`grabbed` and no `downloadFolderImported` event in its per-item history (a
+single grab proves the profile IS satisfiable and the fault was transient); and
+not currently in the download queue.
+
+**Confidence score** gates alert vs heal: contradiction +2, starved +2 (+1 past
+`PROFILE_SANITY_SEVERE_STARVATION_AGE`), pre-HD era +2, TV-pilot-shaped runtime
++1. Alerts at `PROFILE_SANITY_ALERT_MIN_CONFIDENCE` (3), heals only at
+`PROFILE_SANITY_HEAL_MIN_CONFIDENCE` (5).
+
+**Outage guards.** A stack-wide search outage looks exactly like starvation, so
+two fail-closed guards run before anything is flagged. `profile_sanity.indexer_outage`
+fires and the service is skipped entirely when no indexer has Automatic Search
+enabled, when `/api/v3/health` reports "all indexers are unavailable" / "no
+indexers available", when every auto-search indexer is named in an
+`Indexer*Check` failure message, or when either API call *fails*
+(`/api/v3/indexerstatus` is not used — it 404s on Sonarr v4).
+`profile_sanity.outage_suspected` fires and the service is skipped when more
+than `PROFILE_SANITY_MAX_STARVED_RATIO` (50%) of at least
+`PROFILE_SANITY_MIN_LIBRARY_SIZE` (20) eligible items are starved — an outage
+the health endpoint didn't surface, or a brand-new library.
+
+Detection is **alert-only by default**: `profile_sanity.flagged` names the item,
+its current profile, why the profile is impossible (floor vs ceiling in plain
+words) and the recommended profile. `PROFILE_SANITY_AUTO_HEAL=true` opts in to
+reassigning the item — resolved BY NAME from `PROFILE_SANITY_SAFE_PROFILE`
+(default `Any`), skipped entirely if that name is missing or its own floor still
+exceeds the ceiling — with the zero-files gate re-asserted against a freshly
+fetched copy immediately before the write, the full item object PUT with only
+`qualityProfileId` mutated, and before/after ids + names emitted in
+`profile_sanity.healed` so every change is trivially reversible. A **global**
+quality profile is never modified. `PROFILE_SANITY_SEARCH_AFTER_HEAL=true` also
+triggers a `SeriesSearch`/`MoviesSearch`. `PROFILE_SANITY_MAX_HEALS_PER_TICK`
+(5) caps the blast radius and `PROFILE_SANITY_MAX_FLAGS_PER_TICK` (10) caps
+alert volume; alerts are deduped per item (`PROFILE_SANITY_DEBOUNCE`). State is
+surfaced at `GET /health` (and `GET /health/profile_sanity`) under the
+`profile_sanity` key.
 
 ## Consolidating arr-orchestrator
 

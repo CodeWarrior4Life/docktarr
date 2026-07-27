@@ -117,7 +117,10 @@ class Config:
             "artwork_health.consumer_disabled,artwork_health.consumer_reenabled,"
             "artwork_health.consumer_images_disabled,"
             "artwork_health.artwork_missing,artwork_health.error,"
-            "media_qa.flagged,media_qa.remediated,media_qa.error",
+            "media_qa.flagged,media_qa.remediated,media_qa.error,"
+            "profile_sanity.flagged,profile_sanity.healed,"
+            "profile_sanity.indexer_outage,profile_sanity.outage_suspected,"
+            "profile_sanity.error",
         ).strip()
         webhook_events = [e.strip() for e in events_raw.split(",") if e.strip()]
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
